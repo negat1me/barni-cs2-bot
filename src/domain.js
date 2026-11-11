@@ -42,7 +42,12 @@ export function deltaLabel() {
 }
 export function tag(p, day, zone) {
   const count = matchesForDay(p, day, zone).length;
-  return `${p.elo} | ${count}g`.slice(0, 16);
+  const rating = `${p.elo} ELO`;
+  if (!count) return rating.slice(0, 16);
+  const full = `${rating} | G: ${count}`;
+  if (full.length <= 16) return full;
+  const compact = `${rating}|G:${count}`;
+  return compact.length <= 16 ? compact : rating.slice(0, 16);
 }
 export function summary(matches) {
   const wins = matches.filter(m => m.win === true).length;

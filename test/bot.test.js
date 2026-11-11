@@ -77,8 +77,8 @@ test('link → stats → last → summary → unlink works with API fixtures', a
   api.history = async () => [match];
   const command = text => bot.handle({message: {chat: {id: -1, type: 'supergroup'}, from: {id: 1}, text}});
   await command('/link barni'); assert.equal(state.users[1].playerId, 'p');
-  await command('/stats'); assert.match(calls.at(-1)[1].text, /Перемоги: <b>1<\/b>/); assert.equal(calls.at(-1)[1].reply_markup.inline_keyboard[0].length, 3);
-  await command('/last'); assert.match(calls.at(-1)[1].text, /de_mirage/);
+  await command('/stats'); assert.match(calls.at(-1)[1].text, /1W \/ 0L/); assert.equal(calls.at(-1)[1].reply_markup.inline_keyboard[0].length, 3);
+  await command('/last'); assert.match(calls.at(-1)[1].text, /mirage/);
   await command('/summary'); assert.match(calls.at(-1)[1].text, /Підсумок/);
   await bot.refresh('p');
   await bot.updateTags('-1', state.chats[-1]);

@@ -22,6 +22,8 @@ try {
   await api.tg('setMyCommands', { commands: [
     ['link', 'Прив’язати FACEIT'], ['stats', 'Моя статистика'], ['last', 'Останній матч'],
     ['top', 'Топ чату'], ['summary', 'Підсумок дня'], ['records', 'Рекорди'],
+    ['party', 'Зібрати п’ятірку'], ['compare', 'Порівняти гравців'], ['tag', 'Тимчасовий тег'],
+    ['form', 'Форма за останні 20 матчів'], ['taglist', 'Активні теги'],
     ['status', 'Стан оновлення'], ['tags', 'Керування тегами'], ['unlink', 'Відв’язати профіль'], ['help', 'Допомога']
   ].map(([command, description]) => ({ command, description })) });
   console.log(`@${me.username} запущено; перевірка кожні ${interval / 1000} с; ${zone}.`);
@@ -29,6 +31,8 @@ try {
   let nextTick = 0;
   while (running) {
     try {
+      await bot.community.remindParties();
+      await bot.community.expireTags();
       if (Date.now() >= nextTick) { const started = Date.now(); await bot.tick(); nextTick = Math.max(Date.now() + 1000, started + interval); }
       const updates = await api.tg('getUpdates', { offset: store.state.offset, timeout: Math.max(1, Math.min(20, Math.ceil((nextTick - Date.now()) / 1000))), allowed_updates: ['message', 'callback_query'] });
       for (const update of updates) {

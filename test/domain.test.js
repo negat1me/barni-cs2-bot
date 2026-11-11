@@ -17,12 +17,12 @@ test('fresh FACEIT response replaces games and removes historical rating fields'
   const p = {days: {old: {start: 2000}}, peak: 3000}, now = Date.parse('2026-11-11T12:00:00Z');
   const m = {id: 'one', finished: now, win: true};
   observe(p, profile(2100), [m, m], now, zone);
-  assert.equal(tag(p, '2026-11-11', zone), '2100 | 1g');
+  assert.equal(tag(p, '2026-11-11', zone), '2100 ELO | G: 1');
   observe(p, profile(2127), [], now + 60000, zone);
   assert.deepEqual(p.matches, {});
   assert.equal(p.days, undefined);
   assert.equal(p.peak, undefined);
-  assert.equal(tag(p, '2026-11-11', zone), '2127 | 0g');
+  assert.equal(tag(p, '2026-11-11', zone), '2127 ELO');
 });
 test('summary uses ratio of totals, handles unknown winner and zero deaths', () => {
   const s = summary([{win: true, stats: { Kills: '30', Deaths: '10' }}, {win: false, stats: {Kills: '10', Deaths: '20'}}, {win: null}]);

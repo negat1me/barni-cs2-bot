@@ -1,3 +1,4 @@
+import { Community } from './community.js';
 import { recentCard, lifetimeCard, lastMatchCard } from './cards.js';
 import { dayKey, previousDay, normalizeMatch, matchesForDay, observe, deltaLabel, tag, summary, nicknameFrom, escapeHtml as h } from './domain.js';
 
@@ -6,11 +7,16 @@ export const HELP = `🎮 Barni · FACEIT CS2
 /unlink — відв’язати профіль і прибрати тег
 /stats — сьогодні / останні 20 / за весь час
 /last — останній матч
+/party текст — зібрати п’ятірку (наприклад, на 19:00)
+/compare nickname — порівняти (або відповідь гравцю)
+/tag 5 текст — тег на 5 хв (відповідь гравцю або собі)
 /top — рейтинг чату за Elo
 /top day або /top week — інформація про доступність приросту Elo
 /summary — підсумок сьогодні
 /summary yesterday — підсумок учора
 /records — поточний рівень і серія перемог
+/form — останні 10 проти попередніх 10
+/taglist — активні тимчасові теги
 /tags on або /tags off — теги (для адмінів)
 /status — свіжість даних і стан тегів
 
@@ -22,6 +28,7 @@ export class Bot {
   constructor(api, store, config) {
     this.api = api; this.store = store; this.s = store.state; this.config = config;
     this.zone = config.zone; this.inflight = new Map();
+    this.community = new Community(this);
   }
   send(chat, text, extra = {}) {
     return this.api.tg('sendMessage', { chat_id: chat, text, parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...extra });
@@ -134,7 +141,7 @@ export class Bot {
   }
   async updateTags(chatId, group) {
     for (const uid of [...group.members]) {
-      if (!this.s.users[uid]) continue;
+      if (group.customTags?.[uid] || !this.s.users[uid]) continue;
       const p = this.player(uid);
       if (!p.matches || !p.observedAt || Date.now() - p.observedAt > 180000) continue;
       const text = tag(p, dayKey(Date.now(), this.zone), this.zone);
@@ -149,6 +156,7 @@ export class Bot {
     }
   }
   async tick() {
+    await this.community.expireTags();
     this.clearMatches();
     for (const id of new Set(Object.values(this.s.users).map(u => u.playerId))) {
       try { await this.refresh(id); }
@@ -171,6 +179,7 @@ export class Bot {
     if (!user || user.is_bot || message.sender_chat) return;
     try {
       if (callback) {
+        if ((callback.data ?? '').startsWith('party:')) return await this.community.partyCallback(callback, chat, user);
         await this.api.tg('answerCallbackQuery', { callback_query_id: callback.id });
         const [, uid, period] = /^stats:(\d+):(today|recent|all)$/.exec(callback.data ?? '') ?? [];
         if (!uid) return;
@@ -180,9 +189,14 @@ export class Bot {
         catch (error) { if (!error.message.includes('message is not modified')) throw error; }
         return;
       }
-      const match = /^\/(\w+)(?:@(\w+))?(?:\s+(.+))?\s*$/.exec(message.text ?? '');
+      const match = /^\/(\w+)(?:@(\w+))?(?:\s+([\s\S]+))?\s*$/.exec(message.text ?? '');
       if (!match || (match[2] && match[2].toLowerCase() !== this.username?.toLowerCase())) return;
       const command = match[1].toLowerCase(), arg = match[3]?.trim();
+      if (command === 'form') return await this.community.form(message,user);
+      if (command === 'taglist') return await this.community.taglist(chat);
+      if (command === 'party') return await this.community.party(chat, user, arg);
+      if (command === 'compare') return await this.community.compare(message, user, arg);
+      if (command === 'tag') return await this.community.changeTag(message, user, arg);
       if (['start', 'help'].includes(command)) return this.send(chat.id, HELP);
       if (command === 'link') {
         const nickname = nicknameFrom(arg);
@@ -204,6 +218,7 @@ export class Bot {
         for (const [chatId, group] of Object.entries(this.s.chats)) {
           if (group.tagState[user.id]?.value) await this.setTag(chatId, user.id, '');
           group.members = group.members.filter(uid => uid !== String(user.id)); delete group.tagState[user.id];
+          if (group.customTags) delete group.customTags[user.id];
         }
         delete this.s.users[user.id];
         // A pending refresh may still hold a reference, but cannot reinsert the deleted player.
@@ -217,6 +232,7 @@ export class Bot {
         if (arg === 'off') {
           group.tags = false; this.store.save();
           for (const [uid, state] of Object.entries(group.tagState)) if (state.value) { await this.setTag(chat.id, uid, ''); delete group.tagState[uid]; this.store.save(); }
+          group.customTags = {};
         } else { group.tags = true; for (const state of Object.values(group.tagState)) state.retryAt = 0; }
         this.store.save();
         return this.send(chat.id, arg === 'on' ? 'Теги ввімкнено. Боту потрібне право керування тегами.' : 'Теги вимкнено й прибрано.');
@@ -227,7 +243,7 @@ export class Bot {
       const p = this.player(user.id); this.attach(chat, user.id); this.store.save();
       if (command === 'status') {
         const state = this.s.chats[chat.id]?.tagState[user.id];
-        return this.send(chat.id, `Останнє оновлення: ${p.observedAt ? h(this.time(p.observedAt)) : 'ще не було'}\nЧасовий пояс: ${h(this.zone)}\nТег: ${h(state?.error ?? state?.value ?? 'ще не встановлено')}\nІнтервал перевірки: ${this.config.interval / 1000} с`);
+        return this.send(chat.id, `Останнє оновлення: ${p.observedAt ? h(this.time(p.observedAt)) : 'ще не було'}\nЧасовий пояс: ${h(this.zone)}\nТег: ${h(state?.error ?? state?.value ?? 'ще не встановлено')}${this.s.chats[chat.id]?.customTags?.[user.id] ? `\nДо: ${h(this.time(this.s.chats[chat.id].customTags[user.id].expiresAt))}` : ''}\nІнтервал перевірки: ${this.config.interval / 1000} с`);
       }
       if (command === 'stats') return this.send(chat.id, await this.card(user.id), { reply_markup: this.keyboard(user.id) });
       await this.refresh(p.id);

@@ -3,10 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22.13" },
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
     "start": "node --env-file=.env src/index.js",
     "test": "node --test",
-    "check": "node --check src/index.js && node --check src/bot.js && node --check src/domain.js && node --check src/api.js"
+    "check": "node --check src/index.js && node --check src/bot.js && node --check src/domain.js && node --check src/api.js && node --check src/cards.js && node --check src/community.js && node --check src/store.js && node --check src/insights.js"
   }
 }

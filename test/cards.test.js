@@ -10,22 +10,22 @@ test('partial stats never turn missing values into zeros or mismatched K/D total
   ];
   assert.equal(summary(matches).kd, '2.00');
   const card = recentCard(p, matches, 'Останні 20 матчів', 'Europe/Kyiv');
-  assert.match(card, /Хедшоти: <b>50.0%/);
-  assert.match(card, /Асисти <b>4.0/);
-  assert.match(card, /Частина показників недоступна/);
+  assert.match(card, /HS <b>50.0%/);
+  assert.match(card, /20\/15\/4/);
+  assert.match(card, /Неповні дані/);
   assert.ok(!card.includes('Разом K / D / A'));
   assert.match(card, /&lt;barni&gt;/);
   assert.ok(card.length < 4096);
 });
 test('empty day has a clear message without empty numeric blocks', () => {
   const card = recentCard(p, [], 'Сьогодні', 'Europe/Kyiv');
-  assert.match(card, /Завершених матчів за цей період немає/);
+  assert.match(card, /Матчів ще немає/);
   assert.ok(!card.includes('K/D:'));
 });
 test('lifetime shows zero streak, omits unavailable records and percentages', () => {
   const card = lifetimeCard(p, {'Current Win Streak': '0'}, 'Europe/Kyiv');
-  assert.match(card, /Поточна: <b>0/);
-  assert.ok(!card.includes('Найдовша'));
+  assert.match(card, /Win streak <b>0/);
+  assert.ok(!card.includes('Best'));
   assert.ok(!card.includes('—%'));
 });
 
@@ -37,11 +37,11 @@ test('last match score is from player perspective and missing metrics are omitte
     results: {winner: 'faction2', score: {faction1: 8, faction2: 13}}}, 'p');
   m.map = 'de_mirage'; m.stats = {Kills: '20', Deaths: '0', Assists: '4', ADR: '99.5', 'Penta Kills': '0'};
   const card = lastMatchCard(p, m, 'Europe/Kyiv');
-  assert.match(card, /ПЕРЕМОГА  ·  13 : 8/);
+  assert.match(card, /WIN  ·  13 : 8/);
   assert.match(card, /&lt;Team&gt; — Enemy/);
   assert.match(card, /30 хв/);
-  assert.match(card, /K\/D: <b>∞/);
-  assert.match(card, /Ейси: <b>0/);
+  assert.match(card, /K\/D <b>∞/);
+  assert.ok(!card.includes('ACE'));
   assert.ok(!card.includes('Хедшоти:'));
   assert.ok(card.length < 4096);
 });
