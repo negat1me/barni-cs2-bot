@@ -10,7 +10,13 @@ export function previousDay(key) {
 }
 export function normalizeMatch(m, playerId) {
   const side = Object.entries(m.teams ?? {}).find(([, team]) => (team.players ?? team.roster ?? []).some(p => p.player_id === playerId))?.[0];
-  return { id: m.match_id, finished: Number(m.finished_at) * 1000,
+  const opponent = Object.keys(m.teams ?? {}).find(key => key !== side);
+  const scores = m.results?.score ?? {};
+  return { id: m.match_id, started: Number(m.started_at) * 1000,
+    team: side ? m.teams[side]?.nickname ?? m.teams[side]?.name : null,
+    opponent: opponent ? m.teams[opponent]?.nickname ?? m.teams[opponent]?.name : null,
+    ownScore: side ? scores[side] : null, opponentScore: opponent ? scores[opponent] : null,
+    competition: m.competition_name, region: m.region, finished: Number(m.finished_at) * 1000,
     win: side && m.results?.winner ? side === m.results.winner : null,
     score: Object.values(m.results?.score ?? {}).join(' : '),
     url: `https://www.faceit.com/en/cs2/room/${encodeURIComponent(m.match_id)}` };
@@ -18,43 +24,25 @@ export function normalizeMatch(m, playerId) {
 export function matchesForDay(p, day, zone) {
   return Object.values(p.matches ?? {}).filter(m => m.finished && dayKey(m.finished, zone) === day).sort((a, b) => b.finished - a.finished);
 }
-// Profile snapshots represent net rating changes, never invented per-match Elo.
-export function observe(p, profile, matches, now, zone) {
+// A fresh FACEIT response replaces the temporary data; no local history is built.
+export function observe(p, profile, matches, now) {
   const game = profile.games?.cs2;
   if (!game || !Number.isFinite(game.faceit_elo)) throw new Error('Профіль не має рейтингу CS2.');
-  p.matches ??= {};
-  for (const m of matches) if (m.id && m.finished) p.matches[m.id] = { ...p.matches[m.id], ...m };
-  p.days ??= {};
-  const today = dayKey(now, zone);
-  const prev = p.observedAt;
-  if (!p.days[today]) {
-    // A recent observation on the other side of midnight gives an approximate boundary.
-    const nearBoundary = prev && dayKey(prev, zone) === previousDay(today) && now - prev < 180000;
-    p.days[today] = { start: nearBoundary ? p.elo : game.faceit_elo, end: game.faceit_elo, partial: !nearBoundary, approximate: !!nearBoundary, since: nearBoundary ? prev : now };
-  }
-  p.days[today].end = game.faceit_elo;
+  p.matches = Object.fromEntries(matches.filter(m => m.id && m.finished).map(m => [m.id, m]));
   p.nickname = profile.nickname;
   p.level = game.skill_level;
   p.elo = game.faceit_elo;
-  p.peak = Math.max(p.peak ?? game.faceit_elo, game.faceit_elo);
   p.observedAt = now;
+  delete p.days;
+  delete p.peak;
   return p;
 }
-export function delta(p, day) {
-  const d = p.days?.[day];
-  return d ? d.end - d.start : null;
-}
-export function deltaLabel(p, day) {
-  const d = p.days?.[day];
-  if (!d) return 'немає спостережень';
-  return `${signed(delta(p, day))}${d.partial ? ' (від підключення/першої перевірки дня)' : ' (≈ за день)'}`;
+export function deltaLabel() {
+  return 'недоступна у FACEIT Data API';
 }
 export function tag(p, day, zone) {
   const count = matchesForDay(p, day, zone).length;
-  const d = p.days?.[day];
-  const change = d?.partial ? '?' : `~${signed(delta(p, day))}`;
-  const text = `${p.elo}|${count}g ${change}`;
-  return text.length <= 16 ? text : `${p.elo}|${count}g`.slice(0, 16);
+  return `${p.elo} | ${count}g`.slice(0, 16);
 }
 export function summary(matches) {
   const wins = matches.filter(m => m.win === true).length;
@@ -62,11 +50,14 @@ export function summary(matches) {
   let streak = 0;
   for (const m of matches) { if (m.win !== true) break; streak++; }
   const detailed = matches.filter(m => m.stats);
-  const nums = key => detailed.map(m => Number(m.stats[key])).filter(Number.isFinite);
+  const nums = key => detailed.map(m => m.stats[key]).filter(v => v != null && String(v).trim() !== '').map(Number).filter(Number.isFinite);
   const sum = a => a.reduce((a, b) => a + b, 0);
-  const kills = nums('Kills'), deaths = nums('Deaths');
+  const kills = nums('Kills');
+  const paired = detailed.filter(m => ['Kills', 'Deaths'].every(k => m.stats[k] != null && String(m.stats[k]).trim() !== '' && Number.isFinite(Number(m.stats[k]))));
+  const pairedKills = paired.reduce((s,m) => s + Number(m.stats.Kills), 0);
+  const pairedDeaths = paired.reduce((s,m) => s + Number(m.stats.Deaths), 0);
   return { wins, losses, streak, form: matches.slice(0, 5).map(m => m.win === true ? '🟩' : m.win === false ? '🟥' : '⬜').join(' '),
-    kd: kills.length && deaths.length === kills.length ? (sum(kills) / Math.max(1, sum(deaths))).toFixed(2) : '—',
+    kd: paired.length ? (pairedDeaths ? (pairedKills / pairedDeaths).toFixed(2) : pairedKills ? '∞' : '—') : '—',
     avg: kills.length ? (sum(kills) / kills.length).toFixed(1) : '—', detailed: detailed.length };
 }
 export function nicknameFrom(input) {

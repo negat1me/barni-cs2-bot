@@ -1,4 +1,5 @@
-import { dayKey, previousDay, normalizeMatch, matchesForDay, observe, delta, deltaLabel, tag, summary, nicknameFrom, escapeHtml as h } from './domain.js';
+import { recentCard, lifetimeCard, lastMatchCard } from './cards.js';
+import { dayKey, previousDay, normalizeMatch, matchesForDay, observe, deltaLabel, tag, summary, nicknameFrom, escapeHtml as h } from './domain.js';
 
 export const HELP = `🎮 Barni · FACEIT CS2
 /link nickname — прив’язати профіль (або URL)
@@ -6,15 +7,15 @@ export const HELP = `🎮 Barni · FACEIT CS2
 /stats — сьогодні / останні 20 / за весь час
 /last — останній матч
 /top — рейтинг чату за Elo
-/top day або /top week — зміна рейтингу
+/top day або /top week — інформація про доступність приросту Elo
 /summary — підсумок сьогодні
 /summary yesterday — підсумок учора
-/records — рекорд Elo й серія перемог
+/records — поточний рівень і серія перемог
 /tags on або /tags off — теги (для адмінів)
 /status — свіжість даних і стан тегів
 
 Матчі рахуємо за завершенням, день — за часом чату.
-? у тегу: немає повного дня спостережень; ~: приблизна добова зміна Elo.
+Тег: поточне Elo та кількість ігор сьогодні. Історія матчів локально не зберігається.
 Прив’язка за ніком не підтверджує володіння FACEIT-акаунтом.`;
 
 export class Bot {
@@ -40,17 +41,17 @@ export class Bot {
     if (!id || !this.s.players[id]) throw new Error('Спочатку прив’яжи FACEIT: /link nickname');
     return this.s.players[id];
   }
-  async refresh(id, force = false) {
+  async refresh(id) {
     if (this.inflight.has(id)) return this.inflight.get(id);
     const p = this.s.players[id];
-    if (!force && p.observedAt && Date.now() - p.observedAt < 55000) return p;
+
     const run = (async () => {
       const now = Date.now();
       const profile = await this.api.faceit(`/players/${id}`);
-      // Seven days plus boundary padding; all pages, filtered by actual finish time later.
-      const history = await this.api.history(id, Math.floor(now / 1000) - 9 * 86400, Math.floor(now / 1000));
+      // Today and yesterday with timezone padding; filter by actual finish time later.
+      const history = await this.api.history(id, Math.floor(now / 1000) - 3 * 86400, Math.floor(now / 1000));
       observe(p, profile, history.map(m => normalizeMatch(m, id)), now, this.zone);
-      this.store.save(); return p;
+      return p;
     })();
     this.inflight.set(id, run);
     try { return await run; } finally { this.inflight.delete(id); }
@@ -63,28 +64,24 @@ export class Bot {
       const player = round?.teams?.flatMap(t => t.players ?? []).find(v => v.player_id === p.id);
       if (player?.player_stats) {
         m.stats = player.player_stats; m.map = round.round_stats?.Map;
-        if (p.matches[m.id]) Object.assign(p.matches[m.id], m);
+
       }
     }
-    this.store.save();
   }
   async recent(p) {
     const page = await this.api.faceit(`/players/${p.id}/history`, { game: 'cs2', from: 0, limit: 20 });
-    return (page.items ?? []).filter(m => m.finished_at && m.status === 'FINISHED').map(m => ({ ...p.matches[m.match_id], ...normalizeMatch(m, p.id) })).sort((a,b) => b.finished - a.finished);
+    return (page.items ?? []).filter(m => m.finished_at && String(m.status).toLowerCase() === 'finished').map(m => normalizeMatch(m, p.id)).sort((a,b) => b.finished - a.finished);
   }
   async card(uid, period = 'today') {
     const p = await this.refresh(this.player(uid).id);
-    const title = `<b>${h(p.nickname)} · Level ${p.level} · ${p.elo} Elo</b>`;
     if (period === 'all') {
       const data = await this.api.faceit(`/players/${p.id}/stats/cs2`);
-      const s = data.lifetime ?? {};
-      return `${title}\nЗа весь час\nМатчів: ${h(s.Matches ?? '—')} · Перемог: ${h(s.Wins ?? '—')}\nWin rate: ${h(s['Win Rate %'] ?? '—')}%\nK/D: ${h(s['Average K/D Ratio'] ?? s['K/D Ratio'] ?? '—')}\nHS: ${h(s['Average Headshots %'] ?? '—')}%`;
+      return lifetimeCard(p, data.lifetime ?? {}, this.zone);
     }
     const today = dayKey(Date.now(), this.zone);
     const matches = period === 'recent' ? await this.recent(p) : matchesForDay(p, today, this.zone);
     await this.details(p, matches);
-    const s = summary(matches);
-    return `${title}\n${period === 'recent' ? 'Останні 20 матчів' : `Сьогодні · ${today}`}\n${matches.length} матчів · ${s.wins}W / ${s.losses}L\n${period === 'today' ? `Зміна Elo: ${h(deltaLabel(p, today))}\n` : ''}K/D: ${s.kd} · Середні вбивства: ${s.avg}\n${s.form || 'Сьогодні ще без матчів'}\nДетальна статистика: ${s.detailed}/${matches.length} матчів\nОновлено: ${h(this.time(p.observedAt))}`;
+    return recentCard(p, matches, period === 'recent' ? 'Останні 20 матчів' : `Сьогодні · ${today}`, this.zone);
   }
   time(timestamp) { return new Date(timestamp).toLocaleString('uk-UA', { timeZone: this.zone }); }
   keyboard(uid) {
@@ -103,20 +100,17 @@ export class Bot {
     this.store.save(); return result;
   }
   async leaderboard(chat, mode = 'elo', day = dayKey(Date.now(), this.zone), dailySummary = false) {
+    if (!dailySummary && mode !== 'elo') {
+      return this.send(chat.id, 'FACEIT Data API не надає гарантованого приросту Elo за матч. Без локальної історії рейтингу топ приросту недоступний. /top — поточний рейтинг.');
+    }
     const members = await this.members(chat);
     for (const { p } of members) await this.refresh(p.id);
-    const keys = [day];
-    if (mode === 'week') for (let i = 1; i < 7; i++) keys.push(previousDay(keys.at(-1)));
-    const rows = members.map(({ p }) => {
-      const complete = keys.every(k => p.days?.[k] && !p.days[k].partial);
-      const change = complete ? keys.reduce((sum, k) => sum + delta(p, k), 0) : null;
-      const matches = matchesForDay(p, day, this.zone);
-      return { p, change, matches, score: mode === 'elo' ? p.elo : change ?? -Infinity };
-    }).filter(r => !dailySummary || r.matches.length).sort((a, b) => b.score - a.score);
+    const rows = members.map(({ p }) => ({ p, matches: matchesForDay(p, day, this.zone) }))
+      .filter(r => !dailySummary || r.matches.length).sort((a, b) => b.p.elo - a.p.elo);
     const heading = dailySummary ? `📋 Підсумок · ${day}` : `🏆 Топ чату · ${mode === 'elo' ? 'Elo' : mode === 'week' ? 'останні 7 календарних днів' : 'сьогодні'}`;
-    const lines = rows.map(({ p, change, matches }, i) => {
+    const lines = rows.map(({ p, matches }, i) => {
       const s = summary(matches);
-      return `${i + 1}. <b>${h(p.nickname)}</b> · ${p.elo} Elo${dailySummary ? ` · ${matches.length}g ${s.wins}W/${s.losses}L · ${h(deltaLabel(p, day))}` : mode === 'elo' ? '' : ` · ${change == null ? 'неповні дані' : `≈ ${change > 0 ? '+' : ''}${change}`}`}`;
+      return `${i + 1}. <b>${h(p.nickname)}</b> · ${p.elo} Elo${dailySummary ? ` · ${matches.length}g ${s.wins}W/${s.losses}L · ${h(deltaLabel(p, day))}` : ''}`;
     });
     // Bound Telegram message size; avoid splitting HTML tags.
     let chunk = `<b>${heading}</b>\n`;
@@ -142,7 +136,7 @@ export class Bot {
     for (const uid of [...group.members]) {
       if (!this.s.users[uid]) continue;
       const p = this.player(uid);
-      if (!p.observedAt || Date.now() - p.observedAt > 180000) continue;
+      if (!p.matches || !p.observedAt || Date.now() - p.observedAt > 180000) continue;
       const text = tag(p, dayKey(Date.now(), this.zone), this.zone);
       const saved = group.tagState[uid] ??= {};
       if (saved.value === text || (saved.retryAt ?? 0) > Date.now()) continue;
@@ -155,14 +149,19 @@ export class Bot {
     }
   }
   async tick() {
+    this.clearMatches();
     for (const id of new Set(Object.values(this.s.users).map(u => u.playerId))) {
-      try { await this.refresh(id, true); }
+      try { await this.refresh(id); }
       catch (error) { console.error(`Refresh failed (${error.status ?? 'unavailable'})`); }
     }
     for (const [id, group] of Object.entries(this.s.chats)) {
       if (this.config.chatId && id !== this.config.chatId) continue;
       if (group.tags) await this.updateTags(id, group);
     }
+    this.clearMatches();
+  }
+  clearMatches() {
+    for (const p of Object.values(this.s.players)) delete p.matches;
   }
   async handle(update) {
     const callback = update.callback_query;
@@ -175,7 +174,7 @@ export class Bot {
         await this.api.tg('answerCallbackQuery', { callback_query_id: callback.id });
         const [, uid, period] = /^stats:(\d+):(today|recent|all)$/.exec(callback.data ?? '') ?? [];
         if (!uid) return;
-        if (uid !== String(user.id)) return this.send(chat.id, 'Для своєї картки скористайся /stats.');
+        if (uid !== String(user.id)) return this.send(chat.id, `<a href="tg://user?id=${user.id}">${h(user.first_name || user.username || 'Гравець')}</a>, для своєї картки скористайся /stats.`);
         const text = await this.card(uid, period);
         try { await this.api.tg('editMessageText', { chat_id: chat.id, message_id: message.message_id, text, parse_mode: 'HTML', reply_markup: this.keyboard(uid) }); }
         catch (error) { if (!error.message.includes('message is not modified')) throw error; }
@@ -193,7 +192,7 @@ export class Bot {
         if (old && old !== profile.player_id) throw new Error('Спочатку /unlink, потім прив’яжи новий профіль.');
         if (Object.entries(this.s.users).some(([uid, u]) => uid !== String(user.id) && u.playerId === profile.player_id)) throw new Error('Цей FACEIT-профіль уже прив’язаний до іншого учасника.');
         this.s.players[profile.player_id] ??= { id: profile.player_id };
-        await this.refresh(profile.player_id, true);
+        await this.refresh(profile.player_id);
         this.s.users[user.id] = { playerId: profile.player_id };
         this.attach(chat, user.id); this.store.save();
         await this.send(chat.id, `✅ Прив’язано <b>${h(profile.nickname)}</b>. /stats — твоя статистика.\n${chat.type === 'private' ? 'Виклич /stats у групі, щоб додати себе до її рейтингу й тегів.' : 'Тег з’явиться протягом наступного циклу, якщо бот має право керувати тегами.'}`);
@@ -236,13 +235,13 @@ export class Bot {
         const m = (await this.recent(p))[0];
         if (!m) return this.send(chat.id, 'Завершених матчів не знайдено.');
         await this.details(p, [m]);
-        return this.send(chat.id, `<b>${h(p.nickname)} · останній матч</b>\n${m.win === true ? '🟩 Перемога' : m.win === false ? '🟥 Поразка' : 'Результат недоступний'} · ${h(m.score)}\nКарта: ${h(m.map ?? '—')}\nK / D / A: ${h(m.stats?.Kills ?? '—')} / ${h(m.stats?.Deaths ?? '—')} / ${h(m.stats?.Assists ?? '—')}\n${h(this.time(m.finished))}\n<a href="${h(m.url)}">Відкрити матч</a>`);
+        return this.send(chat.id, lastMatchCard(p, m, this.zone), { reply_markup: { inline_keyboard: [[{ text: 'Відкрити матч ↗', url: m.url }]] } });
       }
       const recent = await this.recent(p), s = summary(recent);
-      return this.send(chat.id, `🏅 <b>${h(p.nickname)}</b>\nМаксимум Elo від початку спостережень: ${p.peak}\nПоточний рівень: ${p.level}\nСерія перемог: ${s.streak}${s.streak === 20 ? '+' : ''}\nФорма: ${s.form || '—'}`);
+      return this.send(chat.id, `🏅 <b>${h(p.nickname)}</b>\nПоточний рівень: ${p.level}\nСерія перемог: ${s.streak}${s.streak === 20 ? '+' : ''}\nФорма: ${s.form || '—'}`);
     } catch (error) {
       const text = error.service === 'FACEIT' ? `FACEIT тимчасово недоступний або профіль не знайдено (${error.status}). Спробуй пізніше.` : error.message;
       await this.send(chat.id, `⚠️ ${h(text)}`);
-    }
+    } finally { this.clearMatches(); }
   }
 }

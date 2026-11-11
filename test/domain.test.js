@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dayKey, previousDay, normalizeMatch, matchesForDay, observe, delta, tag, summary, nicknameFrom } from '../src/domain.js';
+import { dayKey, previousDay, normalizeMatch, matchesForDay, observe, tag, summary, nicknameFrom } from '../src/domain.js';
 const zone = 'Europe/Kyiv';
 const profile = elo => ({ nickname: 'barni', games: { cs2: { faceit_elo: elo, skill_level: 10 } } });
 test('Kyiv dates and DST use local finish date, not match start date', () => {
@@ -13,24 +13,16 @@ test('Kyiv dates and DST use local finish date, not match start date', () => {
   assert.equal(matchesForDay({ matches: { one: m } }, '2026-11-11', zone).length, 1);
   assert.equal(matchesForDay({ matches: { one: m } }, '2026-11-10', zone).length, 0);
 });
-test('first-day Elo stays partial; duplicate matches do not inflate count', () => {
-  const p = {}, now = Date.parse('2026-11-11T12:00:00Z');
-  const m = { id: 'one', finished: now, win: true };
+test('fresh FACEIT response replaces games and removes historical rating fields', () => {
+  const p = {days: {old: {start: 2000}}, peak: 3000}, now = Date.parse('2026-11-11T12:00:00Z');
+  const m = {id: 'one', finished: now, win: true};
   observe(p, profile(2100), [m, m], now, zone);
-  observe(p, profile(2127), [m], now + 60000, zone);
-  assert.equal(delta(p, '2026-11-11'), 27);
-  assert.equal(p.days['2026-11-11'].partial, true);
-  assert.equal(tag(p, '2026-11-11', zone), '2127|1g ?');
-  assert.equal(p.peak, 2127);
-});
-test('midnight polling is explicitly approximate; downtime creates a partial day', () => {
-  const p = {};
-  observe(p, profile(2100), [], Date.parse('2026-11-10T21:59:30Z'), zone);
-  observe(p, profile(2120), [], Date.parse('2026-11-10T22:00:30Z'), zone);
-  assert.equal(p.days['2026-11-11'].partial, false);
-  assert.equal(tag(p, '2026-11-11', zone), '2120|0g ~+20');
-  observe(p, profile(2140), [], Date.parse('2026-11-12T09:00:00Z'), zone);
-  assert.equal(p.days['2026-11-12'].partial, true);
+  assert.equal(tag(p, '2026-11-11', zone), '2100 | 1g');
+  observe(p, profile(2127), [], now + 60000, zone);
+  assert.deepEqual(p.matches, {});
+  assert.equal(p.days, undefined);
+  assert.equal(p.peak, undefined);
+  assert.equal(tag(p, '2026-11-11', zone), '2127 | 0g');
 });
 test('summary uses ratio of totals, handles unknown winner and zero deaths', () => {
   const s = summary([{win: true, stats: { Kills: '30', Deaths: '10' }}, {win: false, stats: {Kills: '10', Deaths: '20'}}, {win: null}]);

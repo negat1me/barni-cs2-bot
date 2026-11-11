@@ -42,7 +42,7 @@ export class Api {
     const result = new Map();
     for (let offset = 0; offset <= 1000; offset += 100) {
       const page = await this.faceit(`/players/${id}/history`, { game: 'cs2', from, to, offset, limit: 100 });
-      for (const m of page.items ?? []) if (m.finished_at && m.status === 'FINISHED') result.set(m.match_id, m);
+      for (const m of page.items ?? []) if (m.finished_at && String(m.status).toLowerCase() === 'finished') result.set(m.match_id, m);
       if ((page.items?.length ?? 0) < 100) return [...result.values()];
     }
     throw new Error('Забагато матчів для одного запиту; дані не оновлено, щоб не показати неповний результат.');

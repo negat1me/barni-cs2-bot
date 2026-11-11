@@ -16,7 +16,7 @@ function fixture(tg = async () => ({ status: 'member' })) {
 }
 test('regular member tags require no promotion; unchanged tag skips API write', async () => {
   const { bot, state, calls } = fixture();
-  state.users['1'] = { playerId: 'p' }; state.players.p = { id: 'p', elo: 2000, observedAt: Date.now() };
+  state.users['1'] = { playerId: 'p' }; state.players.p = { id: 'p', elo: 2000, matches: {}, observedAt: Date.now() };
   const group = { members: ['1'], tags: true, tagState: {} };
   await bot.updateTags(-1, group); await bot.updateTags(-1, group);
   assert.equal(calls.filter(([m]) => m === 'setChatMemberTag').length, 1);
@@ -24,7 +24,7 @@ test('regular member tags require no promotion; unchanged tag skips API write', 
 });
 test('owner title failure is recorded with backoff and does not stop other tags', async () => {
   const { bot, state, calls } = fixture(async (_, body) => ({status: body.user_id === 1 ? 'creator' : 'member'}));
-  state.users = {1: {playerId: 'p'}, 2: {playerId: 'p'}}; state.players.p = {id: 'p', elo: 2000, observedAt: Date.now()};
+  state.users = {1: {playerId: 'p'}, 2: {playerId: 'p'}}; state.players.p = {id: 'p', elo: 2000, matches: {}, observedAt: Date.now()};
   const group = {members: ['1', '2'], tags: true, tagState: {}};
   await bot.updateTags(-1, group);
   assert.match(group.tagState['1'].error, /власника/);
@@ -45,9 +45,9 @@ test('callbacks cannot change another user card; commands for other bots ignored
 });
 test('history pagination, deduplication, cancelled match exclusion', async () => {
   const api = new Api({token: 'fake', faceitKey: 'fake'});
-  const m = i => ({match_id: String(i), finished_at: 1, status: 'FINISHED'});
+  const m = i => ({match_id: String(i), finished_at: 1, status: 'finished'});
   const offsets = [];
-  api.faceit = async (_, params) => { offsets.push(params.offset); return {items: params.offset === 0 ? Array.from({length: 100}, (_, i) => m(i)) : [m(99), m(100), {...m(101), status: 'CANCELLED'}]}; };
+  api.faceit = async (_, params) => { offsets.push(params.offset); return {items: params.offset === 0 ? Array.from({length: 100}, (_, i) => m(i)) : [m(99), m(100), {...m(101), status: 'cancelled'}]}; };
   assert.equal((await api.history('p', 0, 100)).length, 101);
   assert.deepEqual(offsets, [0, 100]);
 });
@@ -67,7 +67,7 @@ test('persistent state round trip and corrupted file fails closed', () => {
 test('link → stats → last → summary → unlink works with API fixtures', async () => {
   const {bot, state, calls, api} = fixture();
   const finished = Math.floor(Date.now()/1000);
-  const match = {match_id: 'm1', status: 'FINISHED', finished_at: finished, teams: {faction1: {players: [{player_id: 'p'}]}}, results: {winner: 'faction1', score: {faction1: 13, faction2: 8}}};
+  const match = {match_id: 'm1', status: 'finished', finished_at: finished, teams: {faction1: {players: [{player_id: 'p'}]}}, results: {winner: 'faction1', score: {faction1: 13, faction2: 8}}};
   api.faceit = async path => {
     if (path === '/players' || path === '/players/p') return {player_id: 'p', nickname: 'barni', games: {cs2: {faceit_elo: 2200, skill_level: 10}}};
     if (path.endsWith('/history')) return {items: [match]};
@@ -77,10 +77,30 @@ test('link → stats → last → summary → unlink works with API fixtures', a
   api.history = async () => [match];
   const command = text => bot.handle({message: {chat: {id: -1, type: 'supergroup'}, from: {id: 1}, text}});
   await command('/link barni'); assert.equal(state.users[1].playerId, 'p');
-  await command('/stats'); assert.match(calls.at(-1)[1].text, /1 матчів · 1W \/ 0L/); assert.equal(calls.at(-1)[1].reply_markup.inline_keyboard[0].length, 3);
+  await command('/stats'); assert.match(calls.at(-1)[1].text, /Перемоги: <b>1<\/b>/); assert.equal(calls.at(-1)[1].reply_markup.inline_keyboard[0].length, 3);
   await command('/last'); assert.match(calls.at(-1)[1].text, /de_mirage/);
   await command('/summary'); assert.match(calls.at(-1)[1].text, /Підсумок/);
+  await bot.refresh('p');
   await bot.updateTags('-1', state.chats[-1]);
   await command('/unlink'); assert.equal(state.users[1], undefined); assert.equal(state.players.p, undefined);
   assert.ok(calls.some(([method, body]) => method === 'setChatMemberTag' && body.tag === ''));
+});
+
+test('storage migrates old FACEIT history and never persists transient stats', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'barni-migrate-'));
+  try {
+    const path = join(dir, 'state.json');
+    writeFileSync(path, JSON.stringify({ version: 1, offset: 7, users: {1: {playerId: 'p'}},
+      players: {p: {id: 'p', matches: {old: {}}, days: {old: {}}, peak: 3000}},
+      chats: {'-1': {members: ['1'], tags: true, tagState: {'1': {value: '2200|2g'}}}} }));
+    const store = new Store(path);
+    assert.deepEqual(store.state.players.p, {id: 'p'});
+    store.state.players.p.matches = {secretMatch: {stats: {Kills: '20'}}};
+    store.state.players.p.days = {today: {start: 2200}};
+    store.save();
+    const reloaded = new Store(path);
+    assert.deepEqual(reloaded.state.players.p, {id: 'p'});
+    assert.equal(reloaded.state.chats['-1'].tagState['1'].value, '2200|2g');
+    assert.equal(reloaded.state.offset, 7);
+  } finally { rmSync(dir, {recursive: true}); }
 });
