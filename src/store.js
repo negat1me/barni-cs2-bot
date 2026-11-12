@@ -8,14 +8,14 @@ export class Store {
       if (error.code !== 'ENOENT') throw error; // Never overwrite damaged data.
       this.state = { version: 1, offset: 0, users: {}, players: {}, chats: {} };
     }
-    if (![1, 2, 3, 4].includes(this.state.version)) throw new Error('Unsupported data version');
+    if (![1, 2, 3, 4, 5, 6].includes(this.state.version)) throw new Error('Unsupported data version');
     this.state = this.persistentState();
     // Migrate on startup, removing previously persisted FACEIT history immediately.
     this.save();
   }
   persistentState() {
     return {
-      version: 4,
+      version: 6,
       offset: this.state.offset,
       users: Object.fromEntries(Object.entries(this.state.users).map(([id, u]) => [id, { playerId: u.playerId }])),
       players: Object.fromEntries(Object.values(this.state.users).map(u => [u.playerId, { id: u.playerId }])),

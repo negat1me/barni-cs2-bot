@@ -10,6 +10,7 @@ function fixture(tg = async () => ({ status: 'member' })) {
   const calls = [];
   const state = { users: {}, players: {}, chats: {} };
   const api = { tg: async (method, body) => { calls.push([method, body]); return tg(method, body); } };
+  api.tgUpload = async (method,body,files) => { calls.push([method,body,files]); return {}; };
   const bot = new Bot(api, { state, save() {} }, { zone: 'Europe/Kyiv', interval: 60000 });
   bot.username = 'BarniBot';
   return { bot, calls, state, api };
@@ -42,6 +43,8 @@ test('callbacks cannot change another user card; commands for other bots ignored
   await bot.handle({message}); assert.equal(calls.length, 0);
   await bot.handle({callback_query: {id: 'a', from: {id: 2}, message, data: 'stats:1:today'}});
   assert.equal(calls.some(([m]) => m === 'editMessageText'), false);
+  assert.equal(calls.some(([m]) => m === 'editMessageMedia'), false);
+  assert.match(calls.at(-1)[1].text,/tg:\/\/user\?id=2/);
 });
 test('history pagination, deduplication, cancelled match exclusion', async () => {
   const api = new Api({token: 'fake', faceitKey: 'fake'});
@@ -77,9 +80,12 @@ test('link → stats → last → summary → unlink works with API fixtures', a
   api.history = async () => [match];
   const command = text => bot.handle({message: {chat: {id: -1, type: 'supergroup'}, from: {id: 1}, text}});
   await command('/link barni'); assert.equal(state.users[1].playerId, 'p');
-  await command('/stats'); assert.match(calls.at(-1)[1].text, /1W \/ 0L/); assert.equal(calls.at(-1)[1].reply_markup.inline_keyboard[0].length, 3);
-  await command('/last'); assert.match(calls.at(-1)[1].text, /mirage/);
-  await command('/summary'); assert.match(calls.at(-1)[1].text, /Підсумок/);
+  await command('/stats'); assert.equal(calls.at(-1)[0], 'sendPhoto'); assert.ok(calls.at(-1)[2].card.length > 1000); assert.equal(calls.at(-1)[1].reply_markup.inline_keyboard[0].length, 3);
+  await bot.handle({callback_query:{id:'cb',from:{id:1},data:'stats:1:recent',message:{chat:{id:-1,type:'supergroup'},message_id:3,photo:[{}]}}});
+  assert.equal(calls.at(-1)[0],'editMessageMedia'); assert.equal(calls.at(-1)[1].media.media,'attach://card'); assert.match(calls.at(-1)[1].media.caption,/Останні 20/);
+  await command('/last'); assert.equal(calls.at(-1)[0],'sendPhoto');assert.match(calls.at(-1)[1].caption, /mirage/);
+  assert.equal(calls.at(-1)[1].reply_markup.inline_keyboard[0][0].url,'https://www.faceit.com/en/cs2/room/m1');
+  await command('/summary'); assert.equal(calls.at(-1)[0],'sendPhoto');assert.match(calls.at(-1)[1].caption, /Підсумок/);
   await bot.refresh('p');
   await bot.updateTags('-1', state.chats[-1]);
   await command('/unlink'); assert.equal(state.users[1], undefined); assert.equal(state.players.p, undefined);
@@ -103,4 +109,56 @@ test('storage migrates old FACEIT history and never persists transient stats', (
     assert.equal(reloaded.state.chats['-1'].tagState['1'].value, '2200|2g');
     assert.equal(reloaded.state.offset, 7);
   } finally { rmSync(dir, {recursive: true}); }
+});
+
+test('daily summary omits unavailable Elo delta and API error text',async()=>{
+ const {bot,state,calls}=fixture();state.chats[-1]={members:['1'],tags:true,tagState:{}};state.users[1]={playerId:'p'};state.players.p={id:'p',nickname:'barni',elo:2200,roundStats:[{id:'m',round:1,eloDelta:27}],matches:{m:{id:'m',finished:Date.parse('2026-11-11T12:00Z'),win:true}}};
+ bot.refresh=async()=>state.players.p;
+ bot.renderImage=async()=>{throw new Error('force text fallback');};
+ await bot.leaderboard({id:-1,type:'supergroup'},'day','2026-11-11',true);
+ assert.match(calls.at(-1)[1].text,/1g 1W\/0L/);
+ assert.ok(!calls.at(-1)[1].text.includes('+27 ELO'));
+ assert.ok(!calls.at(-1)[1].text.includes('недоступна у FACEIT Data API'));
+ delete state.players.p.roundStats;
+ await bot.leaderboard({id:-1,type:'supergroup'},'day','2026-11-11',true);
+ assert.ok(!calls.at(-1)[1].text.includes('ELO —'));
+});
+
+test('leaderboard sends every page in sorted order with global positions',async()=>{
+ const {bot,state,calls}=fixture();
+ const rows=Array.from({length:23},(_,i)=>({uid:String(i+1),p:{id:'p'+i,nickname:'Player'+i,elo:2000+i}}));
+ for(const r of rows)state.players[r.p.id]=r.p;
+ bot.members=async()=>rows;bot.refresh=async id=>state.players[id];
+ const pages=[];bot.renderImage=async(kind,data)=>{pages.push([kind,data]);return Buffer.from('PNG');};
+ await bot.leaderboard({id:-1,type:'supergroup'});
+ assert.equal(calls.length,3);assert.deepEqual(pages.map(([,p])=>p.offset),[0,10,20]);
+ assert.equal(pages[0][1].rows[0].p.elo,2022);assert.equal(pages[2][1].rows.at(-1).p.elo,2000);
+ assert.match(calls[2][1].caption,/3\/3/);
+});
+
+test('render failure returns full HTML text and keeps last-match button',async()=>{
+ const {bot,calls}=fixture();bot.renderImage=async()=>{throw new Error('renderer unavailable');};
+ const reply_markup={inline_keyboard:[[{text:'Match',url:'https://www.faceit.com/en/cs2/room/m'}]]};
+ await bot.sendImage(-1,'last',{}, {caption:'Last',fallback:'<b>Stats</b>',reply_markup});
+ assert.equal(calls.at(-1)[0],'sendMessage');assert.equal(calls.at(-1)[1].text,'<b>Stats</b>');
+ assert.deepEqual(calls.at(-1)[1].reply_markup,reply_markup);
+});
+
+test('rankings use official region and country positions and tolerate missing ranks',async()=>{
+ const {bot,api}=fixture(); const paths=[];
+ api.faceit=async(path,params)=>{paths.push([path,params]);if(params.country)return {position:179};return {position:4501};};
+ assert.deepEqual(await bot.rankings({id:'p',region:'EU',country:'ua'}),{country:179,region:4501});
+ assert.equal(paths[1][1].country,'ua');assert.ok(paths[0][0].startsWith('/rankings/games/cs2/regions/EU/players/'));
+ api.faceit=async()=>{throw new Error('Unavailable');};
+ assert.deepEqual(await bot.rankings({id:'p',region:'EU',country:'ua'}),{country:null,region:null});
+});
+
+test('Telegram multipart uploads preserve binary PNG, JSON media and keyboard',async()=>{
+ let payload;
+ const api=new Api({token:'fake',faceitKey:'fake',fetcher:async(_,options)=>{payload=options;return new Response(JSON.stringify({ok:true,result:{message_id:5}}));}});
+ const png=Buffer.from([137,80,78,71]);
+ await api.tgUpload('editMessageMedia',{chat_id:-1,media:{type:'photo',media:'attach://card'},reply_markup:{inline_keyboard:[]}},{card:png});
+ assert.ok(payload.body instanceof FormData);assert.equal(payload.headers,undefined);
+ assert.equal(JSON.parse(payload.body.get('media')).media,'attach://card');
+ assert.deepEqual(Buffer.from(await payload.body.get('card').arrayBuffer()),png);
 });

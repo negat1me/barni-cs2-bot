@@ -6,14 +6,14 @@ const metric = (value, suffix = '') => number(value) == null ? '—' : `${h(valu
 const header = p => `<b>🎮 ${h(p.nickname)}</b>\nLVL <b>${h(p.level)}</b>  ·  <b>${fmt(p.elo)} ELO</b>`;
 const footer = (p, zone) => `\n\n<a href="https://www.faceit.com/en/players/${encodeURIComponent(p.nickname)}">FACEIT ↗</a>  ·  <i>${new Date(p.observedAt).toLocaleTimeString('uk-UA', {timeZone: zone, hour: '2-digit', minute: '2-digit'})}</i>`;
 const statNumber = (m, key) => number(m.stats?.[key]);
-function average(matches, key) {
+function average(matches, key, digits=1) {
   const values = matches.map(m => statNumber(m, key)).filter(v => v != null);
-  return values.length ? (values.reduce((a,b) => a+b, 0) / values.length).toFixed(1) : null;
+  return values.length ? (values.reduce((a,b) => a+b, 0) / values.length).toFixed(digits) : null;
 }
 const integer = value => number(value) == null ? '—' : String(Math.round(Number(value)));
 const kda = (k, d, a) => `K/D/A  <code>${integer(k)}/${integer(d)}/${integer(a)}</code>`;
 const statLine = entries => entries.filter(([,value]) => number(value) != null)
-  .map(([label,value,suffix = '']) => `${label} <b>${metric(value, suffix)}</b>`).join('  ·  ');
+  .map(([label,value,suffix = '']) => `${label} <b>${metric(label==='K/R'?Number(value).toFixed(2):label==='ADR'?Number(value).toFixed(1):value, suffix)}</b>`).join('  ·  ');
 const mapName = value => value ? h(value.replace(/^de_/, '')) : '—';
 export function recentCard(p, matches, label, zone) {
   const top = `${header(p)}\n\n<b>${h(label)}</b>`;

@@ -1,6 +1,6 @@
 import {loadSamples, formCard, stackMaps, partyClock, nextPartyTime, partyAction} from './insights.js';
 import { randomBytes } from 'node:crypto';
-import { dayKey, tag, nicknameFrom, escapeHtml as h } from './domain.js';
+import { tag, nicknameFrom, escapeHtml as h } from './domain.js';
 import { compareCard } from './cards.js';
 
 const mention = user => `<a href="tg://user?id=${user.id}">${h(user.first_name || user.name || 'Гравець')}</a>`;
@@ -14,7 +14,7 @@ export class Community {
   faceitProfile(profile) {
     const game = profile.games?.cs2;
     if (!game || !Number.isFinite(game.faceit_elo)) throw new Error('Профіль не має CS2.');
-    return {id: profile.player_id, nickname: profile.nickname, elo: game.faceit_elo, level: game.skill_level};
+    return {id: profile.player_id, nickname: profile.nickname, elo: game.faceit_elo, level: game.skill_level, avatar:profile.avatar, region:game.region, country:profile.country, observedAt:Date.now()};
   }
   async compare(message, user, arg) {
     const a = await this.profile(user.id);
@@ -32,7 +32,10 @@ export class Community {
       await this.bot.details(p, matches);
       samples.push(matches);
     }
-    return this.bot.send(message.chat.id, compareCard(a, b, samples[0], samples[1]));
+    return this.bot.sendImage(message.chat.id,'compare',{a,b,aMatches:samples[0],bMatches:samples[1]}, {
+      caption:`<b>Compare</b> · ${h(a.nickname)} 🆚 ${h(b.nickname)}`,
+      fallback:compareCard(a,b,samples[0],samples[1])
+    });
   }
   async samples(id) {
     const entry=this.sampleCache.get(id);
@@ -45,7 +48,11 @@ export class Community {
   async form(message,user) {
     const target=message.reply_to_message?.from ?? user;
     const p=await this.profile(target.id);
-    return this.bot.send(message.chat.id, formCard(p,await this.samples(p.id)));
+    const matches=await this.samples(p.id);
+    return this.bot.sendImage(message.chat.id,'form',{player:p,matches}, {
+      caption:`<b>${h(p.nickname)}</b> · Форма · останні ${Math.min(matches.length,10)} / попередні ${Math.max(0,matches.length-10)}`,
+      fallback:formCard(p,matches)
+    });
   }
   async taglist(chat,now=Date.now()) {
     const group=this.bot.group(chat), entries=Object.entries(group.customTags ?? {});
@@ -67,6 +74,14 @@ export class Community {
     }
     return this.bot.send(chat.id,text);
   }
+  async partyName(member,known) {
+    if(known===null)return mention(member);
+    if(known?.nickname)return mention({id:member.id,name:known.nickname});
+    if(this.bot.s.users[member.id]) {
+      try{return mention({id:member.id,name:(await this.profile(member.id)).nickname});}catch{}
+    }
+    return mention(member);
+  }
   async partyCard(party) {
     const lines = [`<b>👥 PARTY · ${party.participants.length}/5</b>`, ...(party.text ? [h(party.text)] : []), ''];
     const ratings = [], samples = [];
@@ -75,7 +90,7 @@ export class Community {
       if (this.bot.s.users[member.id]) {
         try { p = await this.profile(member.id); ratings.push(p.elo); } catch { /* Party remains usable during FACEIT outages. */ }
       }
-      lines.push(`${index + 1}. ${mention(member)}${p ? ` · <b>${p.elo} ELO</b>` : ' · ELO —'}`);
+      lines.push(`${index + 1}. ${await this.partyName(member,p??null)}${p ? ` · <b>${p.elo} ELO</b>` : ' · ELO —'}`);
     }
     for(const member of party.participants) {
       const id=this.bot.s.users[member.id]?.playerId;
@@ -83,7 +98,7 @@ export class Community {
     }
     for (let i = party.participants.length; i < 5; i++) lines.push(`${i + 1}. <i>Вільне місце</i>`);
     if (ratings.length) lines.push('', `AVG ELO <b>${Math.round(ratings.reduce((a,b) => a+b, 0) / ratings.length)}</b>${ratings.length < party.participants.length ? ` · дані ${ratings.length}/${party.participants.length}` : ''}`);
-    if(party.reserves?.length)lines.push('', '<b>Запасні</b>', party.reserves.map(mention).join(', '));
+    if(party.reserves?.length)lines.push('', '<b>Запасні</b>', (await Promise.all(party.reserves.map(m=>this.partyName(m)))).join(', '));
     lines.push('',stackMaps(samples,party.participants.length));
     if(party.startsAt)lines.push('', `⏰ ${h(this.bot.time(party.startsAt))} · ${h(this.bot.zone)}`, party.reminderMissed ? '<i>Час нагадування минув</i>' : party.remindedAt ? '<i>Нагадування надіслано</i>' : '<i>Нагадування: за 10 хв або в час старту</i>');
     lines.push('', party.participants.length === 5 ? '✅ П’ятірка зібрана!' : 'Натисни «Я граю», щоб приєднатися.');
@@ -157,7 +172,7 @@ export class Community {
       const players=[...p.participants,...(p.reserves??[])];
       const left=Math.max(0,Math.ceil((p.startsAt-now)/60000));
       try {
-        await this.bot.send(id,`⏰ <b>PARTY ${left?'через '+left+' хв':'починається'}</b>\n${h(p.text??'')}\n\n${players.map(mention).join(' ')}`);
+        await this.bot.send(id,`⏰ <b>PARTY ${left?'через '+left+' хв':'починається'}</b>\n${h(p.text??'')}\n\n${(await Promise.all(players.map(m=>this.partyName(m)))).join(' ')}`);
         p.remindedAt=now; delete p.reminderRetryAt; delete p.reminderMissed;
       }catch{p.reminderRetryAt=now+60000;}
       this.bot.store.save();
@@ -201,7 +216,7 @@ export class Community {
         if (group.tags && this.bot.s.users[uid]) {
           try {
             const p = await this.bot.refresh(this.bot.player(uid).id);
-            text = tag(p, dayKey(now, this.bot.zone), this.bot.zone);
+            text = tag(p);
           } catch { /* Restore previous text during FACEIT outages, then normal tick updates it. */ }
         }
         try {

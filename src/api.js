@@ -1,9 +1,6 @@
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-export class ApiError extends Error {
-  constructor(service, status, description, retryAfter = 0) {
-    super(`${service}: ${description}`); this.service = service; this.status = status; this.retryAfter = retryAfter;
-  }
-}
+import {ApiError} from './api-error.js';
+export {ApiError} from './api-error.js';
 export class Api {
   constructor({ token, faceitKey, fetcher = fetch }) { this.token = token; this.faceitKey = faceitKey; this.fetcher = fetcher; this.cooldown = {}; }
   async request(service, url, options = {}) {
@@ -32,6 +29,12 @@ export class Api {
     return this.request('Telegram', `https://api.telegram.org/bot${this.token}/${method}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
     });
+  }
+  tgUpload(method, body, files) {
+    const form = new FormData();
+    for (const [key, value] of Object.entries(body)) if (value != null) form.set(key, typeof value === 'object' ? JSON.stringify(value) : String(value));
+    for (const [key, bytes] of Object.entries(files)) form.set(key, new Blob([bytes], {type:'image/png'}), 'faceit-stats.png');
+    return this.request('Telegram', `https://api.telegram.org/bot${this.token}/${method}`, {method:'POST', body:form});
   }
   faceit(path, params = {}) {
     return this.request('FACEIT', `https://open.faceit.com/data/v4${path}?${new URLSearchParams(params)}`, {

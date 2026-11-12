@@ -15,6 +15,7 @@ function fixture(store) {
     if (method === 'getChatMember') return {status: 'member', tag: 'Original'};
     return {message_id: ++messageId};
   }};
+  api.tgUpload=async(method,body,files)=>{calls.push([method,body,files]);return {message_id:++messageId};};
   const bot = new Bot(api, store ?? {state, save() {}}, {zone:'Europe/Kyiv', interval:60000});
   const command = (id, text, replyId) => bot.handle({message: {chat, from: user(id), text,
     ...(replyId ? {reply_to_message: {from: user(replyId)}} : {})}});
@@ -134,8 +135,9 @@ test('compare loads live samples for two accounts without writing target profile
     throw new Error('Unexpected route');
   };
   await f.command(1, '/compare rival');
-  assert.match(f.calls.at(-1)[1].text,/Compare/);
-  assert.match(f.calls.at(-1)[1].text,/WR  <b>—<\/b>/);
+  assert.equal(f.calls.at(-1)[0],'sendPhoto');
+  assert.match(f.calls.at(-1)[1].caption,/Compare/);
+  assert.ok(f.calls.at(-1)[2].card.length>1000);
   assert.equal(f.state.players.b,undefined);
   assert.equal(f.state.players.a.matches,undefined);
 });
@@ -207,5 +209,17 @@ test('form command uses player stat endpoint and does not persist matches',async
   const f=fixture();f.state.users[1]={playerId:'p'};f.state.players.p={id:'p'};
   f.api.faceit=async path=>path.endsWith('/games/cs2/stats')?{items:[]}:{player_id:'p',nickname:'barni',games:{cs2:{faceit_elo:2000}}};
   await f.command(1,'/form');
-  assert.match(f.calls.at(-1)[1].text,/Форма/);assert.equal(f.state.players.p.matches,undefined);
+  assert.equal(f.calls.at(-1)[0],'sendPhoto');assert.match(f.calls.at(-1)[1].caption,/Форма/);assert.equal(f.state.players.p.matches,undefined);
+});
+
+test('party uses linked FACEIT nicknames in active and reserve lists, with Telegram fallback',async()=>{
+ const f=fixture();f.state.users[1]={playerId:'p1'};f.state.players.p1={id:'p1'};
+ f.state.users[2]={playerId:'p2'};f.state.players.p2={id:'p2'};
+ f.api.faceit=async path=>path.endsWith('/games/cs2/stats')?{items:[]}:{player_id:path, nickname:path.endsWith('p1')?'FaceitOne':'<FaceitTwo>',games:{cs2:{faceit_elo:2000,skill_level:10}}};
+ await f.command(1,'/party');await f.click(2,'reserve');await f.click(3,'join');
+ const text=f.calls.filter(([m])=>m==='editMessageText').at(-1)[1].text;
+ assert.match(text,/tg:\/\/user\?id=1">FaceitOne/);
+ assert.match(text,/tg:\/\/user\?id=2">&lt;FaceitTwo&gt;/);
+ assert.match(text,/Player 3/);
+ assert.ok(!text.includes('Player 1'));assert.ok(!text.includes('Player 2'));
 });

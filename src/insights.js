@@ -19,7 +19,8 @@ export async function loadSamples(api, id) {
     }
     if ((data.items?.length ?? 0)<20) break;
   }
-  return [...matches.values()].sort((a,b)=>b.finished-a.finished).slice(0,20);
+  const rows=[...matches.values()].sort((a,b)=>b.finished-a.finished).slice(0,20);
+  return rows;
 }
 export function formCard(p, matches) {
   const recent=matches.slice(0,10), previous=matches.slice(10,20);

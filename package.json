@@ -9,6 +9,10 @@
   "scripts": {
     "start": "node --env-file=.env src/index.js",
     "test": "node --test",
-    "check": "node --check src/index.js && node --check src/bot.js && node --check src/domain.js && node --check src/api.js && node --check src/cards.js && node --check src/community.js && node --check src/store.js && node --check src/insights.js"
+    "check": "node --check src/index.js && node --check src/bot.js && node --check src/domain.js && node --check src/api.js && node --check src/cards.js && node --check src/community.js && node --check src/store.js && node --check src/insights.js && node --check src/stats-image.js && node --check src/api-error.js && node --check src/command-images.js"
+  },
+  "dependencies": {
+    "@resvg/resvg-js": "2.6.2",
+    "sharp": "0.35.5"
   }
 }

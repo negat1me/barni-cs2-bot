@@ -1,9 +1,11 @@
 export const signed = n => n == null ? '?' : `${n > 0 ? '+' : ''}${n}`;
 export const escapeHtml = s => String(s).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 export function dayKey(time = Date.now(), zone = 'Europe/Kyiv') {
-  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(time);
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit', hour:'2-digit', hourCycle:'h23' }).formatToParts(time);
   const value = type => parts.find(p => p.type === type).value;
-  return `${value('year')}-${value('month')}-${value('day')}`;
+  const date = `${value('year')}-${value('month')}-${value('day')}`;
+  // Compare the actual local clock; subtracting seven UTC hours breaks on DST days.
+  return Number(value('hour')) < 7 ? previousDay(date) : date;
 }
 export function previousDay(key) {
   return new Date(Date.parse(`${key}T12:00:00Z`) - 86400000).toISOString().slice(0, 10);
@@ -32,22 +34,16 @@ export function observe(p, profile, matches, now) {
   p.nickname = profile.nickname;
   p.level = game.skill_level;
   p.elo = game.faceit_elo;
+  p.avatar = profile.avatar;
+  p.country = profile.country;
+  p.region = game.region;
   p.observedAt = now;
   delete p.days;
   delete p.peak;
   return p;
 }
-export function deltaLabel() {
-  return 'недоступна у FACEIT Data API';
-}
-export function tag(p, day, zone) {
-  const count = matchesForDay(p, day, zone).length;
-  const rating = `${p.elo} ELO`;
-  if (!count) return rating.slice(0, 16);
-  const full = `${rating} | G: ${count}`;
-  if (full.length <= 16) return full;
-  const compact = `${rating}|G:${count}`;
-  return compact.length <= 16 ? compact : rating.slice(0, 16);
+export function tag(p) {
+  return `${p.elo} ELO`.slice(0,16);
 }
 export function summary(matches) {
   const wins = matches.filter(m => m.win === true).length;

@@ -1,6 +1,9 @@
+import {renderStatsImage} from './stats-image.js';
+import {renderCommandImage, leaderboardPages} from './command-images.js';
+import {loadSamples} from './insights.js';
 import { Community } from './community.js';
 import { recentCard, lifetimeCard, lastMatchCard } from './cards.js';
-import { dayKey, previousDay, normalizeMatch, matchesForDay, observe, deltaLabel, tag, summary, nicknameFrom, escapeHtml as h } from './domain.js';
+import { dayKey, previousDay, normalizeMatch, matchesForDay, observe, tag, summary, nicknameFrom, escapeHtml as h } from './domain.js';
 
 export const HELP = `🎮 Barni · FACEIT CS2
 /link nickname — прив’язати профіль (або URL)
@@ -20,8 +23,8 @@ export const HELP = `🎮 Barni · FACEIT CS2
 /tags on або /tags off — теги (для адмінів)
 /status — свіжість даних і стан тегів
 
-Матчі рахуємо за завершенням, день — за часом чату.
-Тег: поточне Elo та кількість ігор сьогодні. Історія матчів локально не зберігається.
+Матчі рахуємо за завершенням. Ігровий день — від 07:00 до 07:00 за часом чату.
+Тег: тільки поточне Elo. Історія матчів локально не зберігається.
 Прив’язка за ніком не підтверджує володіння FACEIT-акаунтом.`;
 
 export class Bot {
@@ -29,9 +32,16 @@ export class Bot {
     this.api = api; this.store = store; this.s = store.state; this.config = config;
     this.zone = config.zone; this.inflight = new Map();
     this.community = new Community(this);
+    this.renderImage = renderCommandImage;
   }
   send(chat, text, extra = {}) {
     return this.api.tg('sendMessage', { chat_id: chat, text, parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...extra });
+  }
+  async sendImage(chat, kind, data, {caption, fallback, ...extra}) {
+    let photo;
+    try { photo=await this.renderImage(kind,data,{fetcher:this.api.fetcher,zone:this.zone}); }
+    catch { return this.send(chat,fallback,extra); }
+    return this.api.tgUpload('sendPhoto',{chat_id:chat,photo:'attach://card',caption,parse_mode:'HTML',...extra},{card:photo});
   }
   allowed(chat) { return chat.type === 'private' || !this.config.chatId || String(chat.id) === this.config.chatId; }
   group(chat) {
@@ -64,6 +74,16 @@ export class Bot {
     try { return await run; } finally { this.inflight.delete(id); }
   }
   async details(p, matches) {
+    // One official stats page covers most selections, avoiding 20 per-match requests.
+    if (matches.length > 1) {
+      try {
+        const samples = new Map((await loadSamples(this.api, p.id)).map(m => [m.id, m]));
+        for (const m of matches) {
+          const sample = samples.get(m.id);
+          if (sample) { m.stats = sample.stats; m.map = sample.map; }
+        }
+      } catch (error) { if ([401,403,429].includes(error.status)) throw error; }
+    }
     for (const m of matches) {
       if (m.stats) continue;
       const data = await this.api.faceit(`/matches/${encodeURIComponent(m.id)}/stats`);
@@ -81,14 +101,39 @@ export class Bot {
   }
   async card(uid, period = 'today') {
     const p = await this.refresh(this.player(uid).id);
+    const label = period === 'all' ? 'За весь час' : period === 'recent' ? 'Останні 20 матчів' : `Сьогодні · ${dayKey(Date.now(), this.zone).split('-').reverse().join('.')}`;
+    let data, fallback;
     if (period === 'all') {
-      const data = await this.api.faceit(`/players/${p.id}/stats/cs2`);
-      return lifetimeCard(p, data.lifetime ?? {}, this.zone);
+      const stats = await this.api.faceit(`/players/${p.id}/stats/cs2`);
+      data = {player:p, period, lifetime:stats.lifetime ?? {}, label};
+      fallback = lifetimeCard(p, data.lifetime, this.zone);
+    } else {
+      const matches = period === 'recent' ? await this.recent(p) : matchesForDay(p, dayKey(Date.now(),this.zone), this.zone);
+      await this.details(p, matches);
+      data = {player:p, period, matches, label};
+      fallback = recentCard(p, matches, label, this.zone);
     }
-    const today = dayKey(Date.now(), this.zone);
-    const matches = period === 'recent' ? await this.recent(p) : matchesForDay(p, today, this.zone);
-    await this.details(p, matches);
-    return recentCard(p, matches, period === 'recent' ? 'Останні 20 матчів' : `Сьогодні · ${today}`, this.zone);
+    // Rank failures, including rate limits, must not prevent rendering the stats already loaded.
+    data.ranks = await this.rankings(p);
+    const caption = `<b>${h(p.nickname)}</b> · ${h(label)} · <a href="https://www.faceit.com/en/players/${encodeURIComponent(p.nickname)}">FACEIT ↗</a>`;
+    try { return {photo:await renderStatsImage(data, {zone:this.zone, fetcher:this.api.fetcher}), caption, text:fallback}; }
+    catch { return {text:fallback}; }
+  }
+  async rankings(p) {
+    if (!p.region) return {};
+    const path = `/rankings/games/cs2/regions/${encodeURIComponent(p.region)}/players/${encodeURIComponent(p.id)}`;
+    const tasks = [this.api.faceit(path, {limit:1}), /^[a-z]{2}$/i.test(p.country ?? '') ? this.api.faceit(path, {country:p.country.toLowerCase(),limit:1}) : Promise.resolve(null)];
+    const results = await Promise.allSettled(tasks);
+    const position = r => r.status === 'fulfilled' && Number(r.value?.position)>0 ? Number(r.value.position) : null;
+    return {region:position(results[0]), country:position(results[1])};
+  }
+  async showStats(chat, uid, period='today', messageId=null) {
+    const card=await this.card(uid,period), reply_markup=this.keyboard(uid);
+    if (!card.photo) {
+      return this.send(chat,card.text,{reply_markup});
+    }
+    if (messageId) return this.api.tgUpload('editMessageMedia',{chat_id:chat,message_id:messageId,media:{type:'photo',media:'attach://card',caption:card.caption,parse_mode:'HTML'},reply_markup},{card:card.photo});
+    return this.api.tgUpload('sendPhoto',{chat_id:chat,photo:'attach://card',caption:card.caption,parse_mode:'HTML',reply_markup},{card:card.photo});
   }
   time(timestamp) { return new Date(timestamp).toLocaleString('uk-UA', { timeZone: this.zone }); }
   keyboard(uid) {
@@ -115,14 +160,15 @@ export class Bot {
     const rows = members.map(({ p }) => ({ p, matches: matchesForDay(p, day, this.zone) }))
       .filter(r => !dailySummary || r.matches.length).sort((a, b) => b.p.elo - a.p.elo);
     const heading = dailySummary ? `📋 Підсумок · ${day}` : `🏆 Топ чату · ${mode === 'elo' ? 'Elo' : mode === 'week' ? 'останні 7 календарних днів' : 'сьогодні'}`;
-    const lines = rows.map(({ p, matches }, i) => {
-      const s = summary(matches);
-      return `${i + 1}. <b>${h(p.nickname)}</b> · ${p.elo} Elo${dailySummary ? ` · ${matches.length}g ${s.wins}W/${s.losses}L · ${h(deltaLabel(p, day))}` : ''}`;
-    });
-    // Bound Telegram message size; avoid splitting HTML tags.
-    let chunk = `<b>${heading}</b>\n`;
-    for (const line of lines) { if (chunk.length + line.length > 3500) { await this.send(chat.id, chunk); chunk = ''; } chunk += `${line}\n`; }
-    await this.send(chat.id, chunk + (rows.length ? '' : 'Поки немає результатів.'));
+    const pages=leaderboardPages(rows);
+    for (const [index,page] of pages.entries()) {
+      const lines=page.rows.map(({p,matches},i)=>{
+        const s=summary(matches), known=s.wins+s.losses;
+        return `${page.offset+i+1}. <b>${h(p.nickname)}</b> · ${p.elo} Elo${dailySummary?` · ${matches.length}g ${s.wins}W/${s.losses}L · WR ${known?Math.round(100*s.wins/known)+'%':'—'}`:''}`;
+      });
+      const caption=`<b>${h(heading)}</b>${pages.length>1?` · ${index+1}/${pages.length}`:''}`;
+      await this.sendImage(chat.id,dailySummary?'summary':'top',{...page,day,page:index+1,pages:pages.length},{caption,fallback:caption+'\n'+(lines.join('\n')||'Поки немає результатів.')});
+    }
   }
   async admin(chat, uid) {
     this.group(chat);
@@ -144,7 +190,7 @@ export class Bot {
       if (group.customTags?.[uid] || !this.s.users[uid]) continue;
       const p = this.player(uid);
       if (!p.matches || !p.observedAt || Date.now() - p.observedAt > 180000) continue;
-      const text = tag(p, dayKey(Date.now(), this.zone), this.zone);
+      const text = tag(p);
       const saved = group.tagState[uid] ??= {};
       if (saved.value === text || (saved.retryAt ?? 0) > Date.now()) continue;
       try {
@@ -169,7 +215,7 @@ export class Bot {
     this.clearMatches();
   }
   clearMatches() {
-    for (const p of Object.values(this.s.players)) delete p.matches;
+    for (const p of Object.values(this.s.players)) { delete p.matches; }
   }
   async handle(update) {
     const callback = update.callback_query;
@@ -184,8 +230,7 @@ export class Bot {
         const [, uid, period] = /^stats:(\d+):(today|recent|all)$/.exec(callback.data ?? '') ?? [];
         if (!uid) return;
         if (uid !== String(user.id)) return this.send(chat.id, `<a href="tg://user?id=${user.id}">${h(user.first_name || user.username || 'Гравець')}</a>, для своєї картки скористайся /stats.`);
-        const text = await this.card(uid, period);
-        try { await this.api.tg('editMessageText', { chat_id: chat.id, message_id: message.message_id, text, parse_mode: 'HTML', reply_markup: this.keyboard(uid) }); }
+        try { await this.showStats(chat.id, uid, period, message.message_id); }
         catch (error) { if (!error.message.includes('message is not modified')) throw error; }
         return;
       }
@@ -245,13 +290,13 @@ export class Bot {
         const state = this.s.chats[chat.id]?.tagState[user.id];
         return this.send(chat.id, `Останнє оновлення: ${p.observedAt ? h(this.time(p.observedAt)) : 'ще не було'}\nЧасовий пояс: ${h(this.zone)}\nТег: ${h(state?.error ?? state?.value ?? 'ще не встановлено')}${this.s.chats[chat.id]?.customTags?.[user.id] ? `\nДо: ${h(this.time(this.s.chats[chat.id].customTags[user.id].expiresAt))}` : ''}\nІнтервал перевірки: ${this.config.interval / 1000} с`);
       }
-      if (command === 'stats') return this.send(chat.id, await this.card(user.id), { reply_markup: this.keyboard(user.id) });
+      if (command === 'stats') return await this.showStats(chat.id, user.id);
       await this.refresh(p.id);
       if (command === 'last') {
         const m = (await this.recent(p))[0];
         if (!m) return this.send(chat.id, 'Завершених матчів не знайдено.');
         await this.details(p, [m]);
-        return this.send(chat.id, lastMatchCard(p, m, this.zone), { reply_markup: { inline_keyboard: [[{ text: 'Відкрити матч ↗', url: m.url }]] } });
+        return await this.sendImage(chat.id, 'last', {player:p,match:m}, {caption:`<b>${h(p.nickname)}</b> · Останній матч · ${h(String(m.map??'—').replace(/^de_/,''))}`, fallback:lastMatchCard(p,m,this.zone), reply_markup: { inline_keyboard: [[{ text: 'Відкрити матч ↗', url: m.url }]] } });
       }
       const recent = await this.recent(p), s = summary(recent);
       return this.send(chat.id, `🏅 <b>${h(p.nickname)}</b>\nПоточний рівень: ${p.level}\nСерія перемог: ${s.streak}${s.streak === 20 ? '+' : ''}\nФорма: ${s.form || '—'}`);

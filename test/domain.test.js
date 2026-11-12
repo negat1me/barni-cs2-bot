@@ -3,21 +3,45 @@ import assert from 'node:assert/strict';
 import { dayKey, previousDay, normalizeMatch, matchesForDay, observe, tag, summary, nicknameFrom } from '../src/domain.js';
 const zone = 'Europe/Kyiv';
 const profile = elo => ({ nickname: 'barni', games: { cs2: { faceit_elo: elo, skill_level: 10 } } });
-test('Kyiv dates and DST use local finish date, not match start date', () => {
-  assert.equal(dayKey(Date.parse('2026-11-10T22:01:00Z'), zone), '2026-11-11');
-  assert.equal(dayKey(Date.parse('2026-07-10T21:01:00Z'), zone), '2026-07-11');
+test('gaming day changes at 07:00 local time in winter and summer', () => {
+  const cases = [
+    ['2026-11-10T22:01:00Z','2026-11-10'],
+    ['2026-11-11T04:59:59Z','2026-11-10'],
+    ['2026-11-11T05:00:00Z','2026-11-11'],
+    ['2026-07-10T21:01:00Z','2026-07-10'],
+    ['2026-07-11T03:59:59Z','2026-07-10'],
+    ['2026-07-11T04:00:00Z','2026-07-11'],
+    ['2027-01-01T04:59:59Z','2026-12-31'],
+    ['2026-03-01T04:59:59Z','2026-02-28']
+  ];
+  for (const [instant, expected] of cases) assert.equal(dayKey(Date.parse(instant), zone), expected, instant);
   assert.equal(previousDay('2026-03-01'), '2026-02-28');
-  const m = normalizeMatch({ match_id: 'one', started_at: 1794340000, finished_at: Date.parse('2026-11-10T22:01:00Z') / 1000,
+});
+test('07:00 cutoff follows the local clock across both DST transitions', () => {
+  for (const [instant, expected] of [
+    ['2026-03-29T03:59:59Z','2026-03-28'],
+    ['2026-03-29T04:00:00Z','2026-03-29'],
+    ['2026-10-25T04:59:59Z','2026-10-24'],
+    ['2026-10-25T05:00:00Z','2026-10-25']
+  ]) assert.equal(dayKey(Date.parse(instant),zone),expected,instant);
+});
+test('stats assign matches by finish time at the 07:00 boundary; tags show only Elo', () => {
+  const m = normalizeMatch({ match_id: 'one', started_at: Date.parse('2026-11-11T04:50:00Z') / 1000, finished_at: Date.parse('2026-11-11T05:05:00Z') / 1000,
     teams: { faction1: { players: [{ player_id: 'p' }] } }, results: { winner: 'faction1' } }, 'p');
   assert.equal(m.win, true);
-  assert.equal(matchesForDay({ matches: { one: m } }, '2026-11-11', zone).length, 1);
-  assert.equal(matchesForDay({ matches: { one: m } }, '2026-11-10', zone).length, 0);
+  const before = {id:'two', finished:Date.parse('2026-11-11T04:59:59Z'), win:false};
+  const p = {elo:2100,matches:{one:m,two:before}};
+  assert.deepEqual(matchesForDay(p, '2026-11-11', zone).map(m=>m.id), ['one']);
+  assert.deepEqual(matchesForDay(p, '2026-11-10', zone).map(m=>m.id), ['two']);
+  assert.equal(tag(p, '2026-11-11', zone), '2100 ELO');
+  assert.equal(dayKey(Date.parse('2026-11-12T00:20:00Z'),zone), '2026-11-11');
+  assert.equal(previousDay(dayKey(Date.parse('2026-11-12T00:20:00Z'),zone)), '2026-11-10');
 });
 test('fresh FACEIT response replaces games and removes historical rating fields', () => {
   const p = {days: {old: {start: 2000}}, peak: 3000}, now = Date.parse('2026-11-11T12:00:00Z');
   const m = {id: 'one', finished: now, win: true};
   observe(p, profile(2100), [m, m], now, zone);
-  assert.equal(tag(p, '2026-11-11', zone), '2100 ELO | G: 1');
+  assert.equal(tag(p, '2026-11-11', zone), '2100 ELO');
   observe(p, profile(2127), [], now + 60000, zone);
   assert.deepEqual(p.matches, {});
   assert.equal(p.days, undefined);
