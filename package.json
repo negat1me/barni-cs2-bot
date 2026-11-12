@@ -14,5 +14,9 @@
   "dependencies": {
     "@resvg/resvg-js": "2.6.2",
     "sharp": "0.35.5"
-  }
+  },
+  "optionalDependencies": {
+  "@img/sharp-linux-arm": "^0.33.1",
+  "@img/sharp-win32-x64": "^0.33.1"
+}
 }
