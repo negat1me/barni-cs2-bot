@@ -1,6 +1,8 @@
 import {renderStatsImage} from './stats-image.js';
 import {renderCommandImage, leaderboardPages} from './command-images.js';
 import {loadSamples} from './insights.js';
+import {analyticsWindow,buildAnalytics,applyExactDays} from './analytics.js';
+import {analyserCredit,usesAnalyser,hasAnalyserPeak} from './analyser.js';
 import {trackElo,eloDay,eloWeek,eloLabel,peakElo} from './elo-tracking.js';
 import { Community } from './community.js';
 import { recentCard, lifetimeCard, lastMatchCard } from './cards.js';
@@ -21,12 +23,14 @@ export const HELP = `🎮 Barni · FACEIT CS2
 /summary yesterday — підсумок учора
 /records — поточний рівень і серія перемог
 /form — останні 10 проти попередніх 10
+/maps — WR, ADR та K/D за картами
+/bestmatch — найкращі матчі за 30 днів
 /taglist — активні тимчасові теги
 /tags on або /tags off — теги (для адмінів)
 /status — свіжість даних і стан тегів
 
 Матчі рахуємо за завершенням. Ігровий день — від 07:00 до 07:00 за часом чату.
-Тег: поточне Elo / MAX від початку трекінгу. ~ — приріст за неповний день.
+Тег: поточне Elo / MAX. Analyser додає історичний MAX та Δ за матчами; без нього — власний трекінг. ~ — неповний період.
 Зберігаємо лише Elo та денні значення; матчі не записуємо.
 Прив’язка за ніком не підтверджує володіння FACEIT-акаунтом.`;
 
@@ -36,11 +40,13 @@ export class Bot {
     this.zone = config.zone; this.inflight = new Map();
     this.community = new Community(this);
     this.renderImage = renderCommandImage;
+    this.analyticsCache=new Map();
   }
   send(chat, text, extra = {}) {
     return this.api.tg('sendMessage', { chat_id: chat, text, parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...extra });
   }
   async sendImage(chat, kind, data, {caption, fallback, ...extra}) {
+    if(usesAnalyser(data)){caption+='\n'+analyserCredit;fallback+='\n'+analyserCredit;}
     let photo;
     try { photo=await this.renderImage(kind,data,{fetcher:this.api.fetcher,zone:this.zone}); }
     catch { return this.send(chat,fallback,extra); }
@@ -61,6 +67,44 @@ export class Bot {
     if (!id || !this.s.players[id]) throw new Error('Спочатку прив’яжи FACEIT: /link nickname');
     return this.s.players[id];
   }
+  async enrichPeak(p) {
+    if(!this.api.analyser?.enabled)return p;
+    const known=this.s.players[p.id];
+    const record=await this.api.analyser.stats(p.id,p.analyser??known?.analyser);
+    const previous=known?.analyser;
+    if(record){p.analyser=record;if(known&&previous!==record){known.analyser=record;this.store.save();}}
+    return p;
+  }
+  async analytics(p) {
+    if(!this.api.analyser?.enabled||typeof this.api.analyser.matches!=='function')return null;
+    const now=Date.now(),window=analyticsWindow(now,this.zone);
+    const recent=p.matches?Object.values(p.matches):await this.recent(p);
+    const latest=[...recent].sort((a,b)=>b.finished-a.finished)[0]?.id??'';
+    const version=`${p.elo}:${latest}:${window.endDay}`;
+    const cached=this.analyticsCache.get(p.id);
+    if(cached?.version===version&&now<cached.until) {
+      const value=await cached.promise;if(value)applyExactDays(p,value);return value;
+    }
+    const entry={version,until:now+86400000};
+    entry.promise=(async()=>{
+      const [provider,history]=await Promise.all([
+        this.api.analyser.matches(p.id,version,window.from-86400000),
+        this.api.history(p.id,Math.floor(window.from/1000)-86400,Math.floor(now/1000))
+      ]);
+      const data=buildAnalytics(p.id,provider,history,window,this.zone);
+      if(provider?.stale||!provider?.available)entry.until=Date.now()+900000;
+      else if(latest&&!data.matchDeltas.has(latest)) {
+        this.api.analyser.retryMatchesSoon(p.id);entry.until=Date.now()+120000;
+      }
+      applyExactDays(p,data);return data;
+    })().catch(()=>{entry.until=Date.now()+900000;p.exactEloDays={};p.missingEloDays=[window.endDay];return null;});
+    this.analyticsCache.set(p.id,entry);
+    while(this.analyticsCache.size>100)this.analyticsCache.delete(this.analyticsCache.keys().next().value);
+    return entry.promise;
+  }
+  applyMatchElo(matches,data) {
+    for(const match of matches)if(data?.matchDeltas.has(match.id)){match.eloDelta=data.matchDeltas.get(match.id);match.analyserUsed=true;}
+  }
   async refresh(id) {
     if (this.inflight.has(id)) return this.inflight.get(id);
     const p = this.s.players[id];
@@ -73,6 +117,7 @@ export class Bot {
       p.elo=profile.games.cs2.faceit_elo;
       p.observedAt=observedAt;
       trackElo(p,observedAt,this.zone);this.store.save();
+      await this.enrichPeak(p);
       // Today and yesterday with timezone padding; filter by actual finish time later.
       const history = await this.api.history(id, Math.floor(now / 1000) - 3 * 86400, Math.floor(now / 1000));
       observe(p, profile, history.map(m => normalizeMatch(m, id)), observedAt, this.zone);
@@ -109,6 +154,7 @@ export class Bot {
   }
   async card(uid, period = 'today') {
     const p = await this.refresh(this.player(uid).id);
+    const analytics=await this.analytics(p);
     const label = period === 'all' ? 'За весь час' : period === 'recent' ? 'Останні 20 матчів' : `Сьогодні · ${dayKey(Date.now(), this.zone).split('-').reverse().join('.')}`;
     let data, fallback;
     if (period === 'all') {
@@ -118,12 +164,15 @@ export class Bot {
     } else {
       const matches = period === 'recent' ? await this.recent(p) : matchesForDay(p, dayKey(Date.now(),this.zone), this.zone);
       await this.details(p, matches);
+      this.applyMatchElo(matches,analytics);
       data = {player:p, period, matches, label};
       fallback = recentCard(p, matches, label, this.zone);
     }
     // Rank failures, including rate limits, must not prevent rendering the stats already loaded.
     data.ranks = await this.rankings(p);
-    const caption = `<b>${h(p.nickname)}</b> · ${h(label)} · <a href="https://www.faceit.com/en/players/${encodeURIComponent(p.nickname)}">FACEIT ↗</a>`;
+    if(analytics){data.graph=analytics.graph;data.analyserUsed=analytics.analyserUsed;}
+    let caption = `<b>${h(p.nickname)}</b> · ${h(label)} · <a href="https://www.faceit.com/en/players/${encodeURIComponent(p.nickname)}">FACEIT ↗</a>`;
+    if(usesAnalyser(data)){caption+='\n'+analyserCredit;fallback+='\n'+analyserCredit;}
     try { return {photo:await renderStatsImage(data, {zone:this.zone, fetcher:this.api.fetcher}), caption, text:fallback}; }
     catch { return {text:fallback}; }
   }
@@ -162,6 +211,7 @@ export class Bot {
   async leaderboard(chat, mode = 'elo', day = dayKey(Date.now(), this.zone), dailySummary = false) {
     const members = await this.members(chat);
     for (const { p } of members) await this.refresh(p.id);
+    for (const { p } of members) await this.analytics(p);
     const rows = members.map(({ p }) => ({ p, change:mode==='week'?eloWeek(p,day):eloDay(p,day), matches: matchesForDay(p, day, this.zone) }))
       .filter(r => !dailySummary || r.matches.length).sort((a,b)=>!dailySummary&&mode!=='elo'?(b.change?.value??-Infinity)-(a.change?.value??-Infinity)||b.p.elo-a.p.elo:b.p.elo-a.p.elo);
     const heading = dailySummary ? `📋 Підсумок · ${day}` : `🏆 Топ чату · ${mode === 'elo' ? 'Elo' : mode === 'week' ? 'останні 7 ігрових днів' : 'сьогодні'}`;
@@ -243,12 +293,14 @@ export class Bot {
       if (!match || (match[2] && match[2].toLowerCase() !== this.username?.toLowerCase())) return;
       const command = match[1].toLowerCase(), arg = match[3]?.trim();
       if (command === 'teams') return await this.community.teams(message);
+      if (command === 'maps') return await this.community.maps(message,user);
+      if (command === 'bestmatch') return await this.community.bestmatch(message,user);
       if (command === 'form') return await this.community.form(message,user);
       if (command === 'taglist') return await this.community.taglist(chat);
       if (command === 'party') return await this.community.party(chat, user, arg);
       if (command === 'compare') return await this.community.compare(message, user, arg);
       if (command === 'tag') return await this.community.changeTag(message, user, arg);
-      if (['start', 'help'].includes(command)) return this.send(chat.id, HELP);
+      if (['start', 'help'].includes(command)) return this.send(chat.id, HELP+((this.api.analyser?.enabled||Object.values(this.s.players).some(hasAnalyserPeak))?'\n\n'+analyserCredit:''));
       if (command === 'link') {
         const nickname = nicknameFrom(arg);
         const profile = await this.api.faceit('/players', { nickname, game: 'cs2' });
@@ -294,7 +346,7 @@ export class Bot {
       const p = this.player(user.id); this.attach(chat, user.id); this.store.save();
       if (command === 'status') {
         const state = this.s.chats[chat.id]?.tagState[user.id];
-        return this.send(chat.id, `Останнє оновлення: ${p.observedAt ? h(this.time(p.observedAt)) : 'ще не було'}\nЧасовий пояс: ${h(this.zone)}\nТег: ${h(state?.error ?? state?.value ?? 'ще не встановлено')}${this.s.chats[chat.id]?.customTags?.[user.id] ? `\nДо: ${h(this.time(this.s.chats[chat.id].customTags[user.id].expiresAt))}` : ''}\nІнтервал перевірки: ${this.config.interval / 1000} с`);
+        return this.send(chat.id, `Останнє оновлення: ${p.observedAt ? h(this.time(p.observedAt)) : 'ще не було'}\nЧасовий пояс: ${h(this.zone)}\nТег: ${h(state?.error ?? state?.value ?? 'ще не встановлено')}${this.s.chats[chat.id]?.customTags?.[user.id] ? `\nДо: ${h(this.time(this.s.chats[chat.id].customTags[user.id].expiresAt))}` : ''}\nІнтервал перевірки: ${this.config.interval / 1000} с${this.api.analyser?.enabled ? `\nFaceit Analyser: ${h(this.api.analyser.status)}` : ''}`);
       }
       if (command === 'stats') return await this.showStats(chat.id, user.id);
       await this.refresh(p.id);
@@ -302,6 +354,7 @@ export class Bot {
         const m = (await this.recent(p))[0];
         if (!m) return this.send(chat.id, 'Завершених матчів не знайдено.');
         await this.details(p, [m]);
+        this.applyMatchElo([m],await this.analytics(p));
         return await this.sendImage(chat.id, 'last', {player:p,match:m}, {caption:`<b>${h(p.nickname)}</b> · Останній матч · ${h(String(m.map??'—').replace(/^de_/,''))}`, fallback:lastMatchCard(p,m,this.zone), reply_markup: { inline_keyboard: [[{ text: 'Відкрити матч ↗', url: m.url }]] } });
       }
       const recent = await this.recent(p), s = summary(recent);

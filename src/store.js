@@ -6,6 +6,14 @@ function persistentElo(tracking) {
     days:Object.fromEntries(Object.entries(tracking.days??{}).filter(([key,day])=>/^\d{4}-\d{2}-\d{2}$/.test(key)&&['start','end','firstAt','lastAt'].every(k=>Number.isFinite(day[k])&&day[k]>=0))
       .sort(([a],[b])=>a.localeCompare(b)).slice(-32).map(([key,d])=>[key,{start:d.start,end:d.end,firstAt:d.firstAt,lastAt:d.lastAt,partial:!!d.partial}]))};
 }
+function persistentAnalyser(record,id) {
+  if(!record||record.playerId!==id||!Number.isFinite(record.attemptedAt))return undefined;
+  const number=value=>Number.isFinite(value)&&value>=0?value:null;
+  const date=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)?value:null;
+  return {playerId:id,highestElo:number(record.highestElo),lowestElo:number(record.lowestElo),
+    firstOccurrence:date(record.firstOccurrence),lastOccurrence:date(record.lastOccurrence),
+    checkedAt:number(record.checkedAt)??0,attemptedAt:record.attemptedAt,retryAt:number(record.retryAt)??0};
+}
 export class Store {
   constructor(path) {
     this.path = path;
@@ -14,7 +22,7 @@ export class Store {
       if (error.code !== 'ENOENT') throw error; // Never overwrite damaged data.
       this.state = { version: 1, offset: 0, users: {}, players: {}, chats: {} };
     }
-    if (![1, 2, 3, 4, 5, 6, 7].includes(this.state.version)) throw new Error('Unsupported data version');
+    if (![1, 2, 3, 4, 5, 6, 7, 8].includes(this.state.version)) throw new Error('Unsupported data version');
     if(this.state.version<7)for(const p of Object.values(this.state.players??{}))delete p.eloTracking;
     this.state = this.persistentState();
     // Migrate on startup, removing previously persisted FACEIT history immediately.
@@ -22,12 +30,13 @@ export class Store {
   }
   persistentState() {
     return {
-      version: 7,
+      version: 8,
       offset: this.state.offset,
       users: Object.fromEntries(Object.entries(this.state.users).map(([id, u]) => [id, { playerId: u.playerId }])),
       players: Object.fromEntries(Object.values(this.state.users).map(u => {
         const tracking=persistentElo(this.state.players[u.playerId]?.eloTracking);
-        return [u.playerId,{id:u.playerId,...(tracking?{eloTracking:tracking}:{})}];
+        const analyser=persistentAnalyser(this.state.players[u.playerId]?.analyser,u.playerId);
+        return [u.playerId,{id:u.playerId,...(tracking?{eloTracking:tracking}:{}),...(analyser?{analyser}:{})}];
       })),
       chats: Object.fromEntries(Object.entries(this.state.chats).map(([id, c]) => [id, {
         members: c.members, tags: c.tags,

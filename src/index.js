@@ -11,7 +11,7 @@ if (!Number.isFinite(interval) || interval < 60000) throw new Error('POLL_INTERV
 const zone = process.env.TIMEZONE || 'Europe/Kyiv';
 new Intl.DateTimeFormat('uk-UA', { timeZone: zone });
 const store = new Store(process.env.DATA_FILE || './data/state.json');
-const api = new Api({ token, faceitKey });
+const api = new Api({ token, faceitKey, analyserKey:process.env.FACEIT_ANALYSER_API_KEY });
 const bot = new Bot(api, store, { zone, interval, chatId: process.env.TELEGRAM_CHAT_ID || '' });
 let running = true;
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { running = false; });
@@ -23,7 +23,7 @@ try {
     ['link', 'Прив’язати FACEIT'], ['stats', 'Моя статистика'], ['last', 'Останній матч'],
     ['top', 'Топ чату'], ['summary', 'Підсумок дня'], ['records', 'Рекорди'],
     ['party', 'Зібрати п’ятірку'], ['teams','Поділити 10 гравців на команди'], ['compare', 'Порівняти гравців'], ['tag', 'Тимчасовий тег'],
-    ['form', 'Форма за останні 20 матчів'], ['taglist', 'Активні теги'],
+    ['form', 'Форма за останні 20 матчів'], ['maps','Статистика карт'], ['bestmatch','Найкращі матчі'], ['taglist', 'Активні теги'],
     ['status', 'Стан оновлення'], ['tags', 'Керування тегами'], ['unlink', 'Відв’язати профіль'], ['help', 'Допомога']
   ].map(([command, description]) => ({ command, description })) });
   console.log(`@${me.username} запущено; перевірка кожні ${interval / 1000} с; ${zone}.`);

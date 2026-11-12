@@ -2,6 +2,7 @@ import {colors as c, n, text as t, box as b, trim, avatarPng, renderSvg} from '.
 import {summary, escapeHtml as xml} from './domain.js';
 import {peakElo,eloDay,eloLabel,eloNote} from './elo-tracking.js';
 import {averageStat, numeric} from './insights.js';
+import {creditSvg,usesAnalyser} from './analyser.js';
 
 const middle='text-anchor="middle"', end='text-anchor="end"';
 const fmt=(v,d=0,s='')=>v===Infinity?'∞':n(v,d,s);
@@ -68,7 +69,8 @@ export function leaderboardSvg({rows,kind='top',mode='elo',day='',offset=0,page=
   });
   if(!rows.length)body+=t(560,246,'Поки немає результатів',25,c.muted,400,middle);
   const missing=rows.some(r=>r.matches?.some(m=>m.win==null));
-  const footer=(daily?'Доба 07:00–07:00 · MAX від початку трекінгу':'MAX від початку трекінгу')+' · ~ неповний період'+(missing?' · є невідомі результати':'')+(pages>1?` · ${page}/${pages}`:'');
+  const source=usesAnalyser({rows})?'MAX: Faceit Analyser + трекінг':'MAX від початку трекінгу';
+  const footer=(daily?'Доба 07:00–07:00 · '+source:source)+' · ~ неповний період'+(missing?' · є невідомі результати':'')+(pages>1?` · ${page}/${pages}`:'');
   return frame(h,daily?'SUMMARY':'LEADERBOARD',daily?`Підсумок · ${day.split('-').reverse().join('.')}`:mode==='elo'?'Топ чату':mode==='week'?'Приріст Elo · 7 днів':'Приріст Elo · ігровий день',body,footer);
 }
 
@@ -111,7 +113,7 @@ export function compareSvg(model,avatars=[]) {
     body+=b(44,y,1032,58)+t(560,y+36,metric.label,17,c.muted,700,middle)+compared(metric,286,y+40,'left')+compared(metric,832,y+40,'right');
   });
   body+=formStrip(aMatches,170,730)+formStrip(bMatches,704,730);
-  body+=t(44,798,'MAX від початку трекінгу · ~ зміна за неповний день',14,c.muted);
+  body+=t(44,798,(usesAnalyser({a,b:other})?'MAX: Faceit Analyser + трекінг':'MAX від початку трекінгу')+' · ~ неповний день',14,c.muted);
   return frame(852,'COMPARE','',body,`Останні до 20 матчів · AVG / матч · ELO поточне${model.incomplete?' · неповні дані':''}`);
 }
 
@@ -123,7 +125,7 @@ export function lastModel({player,match:m},zone='Europe/Kyiv') {
     score:own!=null&&opponent!=null?`${own} : ${opponent}`:m.score||'—',
     map:String(m.map??'Карта —').replace(/^de_/,''),context:[date,duration,m.region].filter(Boolean).join(' · '),
     kda:['Kills','Deaths','Assists'].map(k=>fmt(s[k])).join('/'),kd:fmt(ratio([m]),2),
-    adr:fmt(s.ADR,1),hs:fmt(s['Headshots %'],0,'%'),kr:fmt(s['K/R Ratio'],2),
+    adr:fmt(s.ADR,1),hs:fmt(s['Headshots %'],0,'%'),kr:fmt(s['K/R Ratio'],2),delta:m.eloDelta==null?'—':`${m.eloDelta>0?'+':''}${fmt(m.eloDelta)}`,
     multi:[['2K','Double Kills'],['3K','Triple Kills'],['4K','Quadro Kills'],['ACE','Penta Kills']].filter(([,k])=>numeric(s[k])>0).map(([label,key])=>`${label} ${fmt(s[key])}`).join('   ·   '),incomplete:partial([m])};
 }
 export function lastSvg(model,avatars=[],zone='Europe/Kyiv') {
@@ -135,6 +137,7 @@ export function lastSvg(model,avatars=[],zone='Europe/Kyiv') {
   let x=44;body+=b(44,410,1032,110);
   for(const [label,value,width] of metrics){body+=t(x+24,445,label,18,c.muted,700)+t(x+24,494,value,label==='K/D/A'?43:39,c.text,700);x+=width;}
   body+=b(44,542,1032,84)+t(68,573,'K/R',17,c.muted,700)+t(68,607,model.kr,27,c.text,700)+t(300,594,model.multi||'CS2 · матч завершено',23,c.muted);
+  body+=t(1052,573,'Δ ELO',17,c.muted,700,end)+t(1052,607,model.delta,27,m.eloDelta>0?c.green:m.eloDelta<0?c.red:c.muted,700,end);
   body+=t(44,674,model.context,20,c.muted);
   body+=t(44,712,eloNote(model.player,zone),14,c.muted);
   return frame(770,'ОСТАННІЙ МАТЧ','',body,`LVL / ELO — поточні${model.incomplete?' · частина показників недоступна':''}`);
@@ -180,16 +183,39 @@ export function teamsSvg({a,b:other,avgA,avgB,difference},avatars=[]) {
     });
   }
   body+=b(44,694,1032,72)+t(68,737,'Різниця AVG ELO',22,c.muted,700)+t(1052,741,fmt(difference,1),36,c.green,700,end);
-  return frame(828,'TEAMS','Команди · 5 vs 5',body,'Баланс за поточним Elo · MAX від початку трекінгу');
+  return frame(828,'TEAMS','Команди · 5 vs 5',body,'Баланс за поточним Elo · '+(usesAnalyser({a,b:other})?'MAX: Faceit Analyser + трекінг':'MAX від початку трекінгу'));
+}
+export function mapsSvg(data,avatars=[]) {
+  const rows=data.maps.slice(0,12),height=360+Math.max(1,rows.length)*64;
+  let body=playerHeader(data.player,avatars[0])+t(44,231,`Карти · ${data.period}`,25,c.text,700);
+  for(const [label,x] of [['КАРТА',68],['МАТЧІ',530],['WR',690],['ADR',870],['K/D',1048]])body+=t(x,272,label,17,c.muted,700,x===68?'':end);
+  rows.forEach((row,i)=>{const y=290+i*64;body+=b(44,y,1032,54)+playerName(68,y+36,row.map.replace(/^de_/,''),330,24,24)+t(530,y+36,fmt(row.count),25,c.text,700,end)+t(690,y+36,fmt(row.wr,0,'%'),25,row.count<5||row.wr==null?c.muted:row.wr>=50?c.green:c.red,700,end)+t(870,y+36,fmt(row.adr,1),25,c.text,700,end)+t(1048,y+36,fmt(row.kd,2),25,c.text,700,end);});
+  if(!rows.length)body+=t(560,333,'Немає матчів із відомою картою',22,c.muted,400,middle);
+  return frame(height,'MAPS','',body,`Покриття ${data.mapCovered??data.covered}/${data.expected} матчів${data.complete&&(data.mapCovered??data.covered)===data.expected?'':' · неповна вибірка'} · менше 5 матчів — мала вибірка`);
+}
+export function bestSvg(data,avatars=[],zone='Europe/Kyiv') {
+  let body=playerHeader(data.player,avatars[0])+t(44,231,`Найкращі · ${data.period}`,25,c.text,700);
+  data.best.forEach((record,i)=>{
+    const y=254+i*166,m=record.match;
+    body+=b(44,y,1032,148)+t(68,y+36,record.label.toUpperCase(),18,c.orange,700);
+    if(!m){body+=t(68,y+93,'Показник недоступний',25,c.muted);return;}
+    const date=Number.isFinite(m.finished)?new Date(m.finished).toLocaleDateString('uk-UA',{timeZone:zone,day:'2-digit',month:'2-digit'}):'';
+    body+=t(68,y+84,String(m.map??'—').replace(/^de_/, '').toUpperCase(),31,c.text,700)+t(1048,y+91,fmt(record.value,record.key==='adr'?1:record.key==='kd'?2:0),46,c.green,700,end);
+    body+=t(68,y+121,`${date} · ${m.win===true?'WIN':m.win===false?'LOSS':'—'} · K/D/A ${['Kills','Deaths','Assists'].map(k=>fmt(m.stats?.[k])).join('/')}`,18,c.muted);
+  });
+  return frame(820,'BEST MATCHES','',body,`Покриття ${data.covered}/${data.expected} матчів${(data.bestComplete??data.complete)?'':' · рекорди лише за доступною вибіркою'}`);
 }
 export async function renderCommandImage(kind,data,{fetcher=fetch,zone='Europe/Kyiv'}={}) {
-  if(kind==='teams')return renderSvg(teamsSvg(data,await avatarsFor([...data.a,...data.b],fetcher)));
+  const png=svg=>renderSvg(creditSvg(svg,data));
+  if(kind==='maps')return png(mapsSvg(data,await avatarsFor([data.player],fetcher)));
+  if(kind==='best')return png(bestSvg(data,await avatarsFor([data.player],fetcher),zone));
+  if(kind==='teams')return png(teamsSvg(data,await avatarsFor([...data.a,...data.b],fetcher)));
   if(kind==='top'||kind==='summary') {
     const avatars=kind==='top'?await avatarsFor(data.rows.map(r=>r.p),fetcher):[];
-    return renderSvg(leaderboardSvg({...data,kind,zone},avatars));
+    return png(leaderboardSvg({...data,kind,zone},avatars));
   }
-  if(kind==='compare')return renderSvg(compareSvg(compareModel(data),await avatarsFor([data.a,data.b],fetcher)));
-  if(kind==='last')return renderSvg(lastSvg(lastModel(data,zone),await avatarsFor([data.player],fetcher),zone));
-  if(kind==='form')return renderSvg(formSvg(formModel(data),await avatarsFor([data.player],fetcher),zone));
+  if(kind==='compare')return png(compareSvg(compareModel(data),await avatarsFor([data.a,data.b],fetcher)));
+  if(kind==='last')return png(lastSvg(lastModel(data,zone),await avatarsFor([data.player],fetcher),zone));
+  if(kind==='form')return png(formSvg(formModel(data),await avatarsFor([data.player],fetcher),zone));
   throw new Error('Unknown image kind');
 }

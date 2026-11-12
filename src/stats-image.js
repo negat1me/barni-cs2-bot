@@ -2,6 +2,7 @@ import {fileURLToPath} from 'node:url';
 import {escapeHtml as xml, summary,dayKey} from './domain.js';
 import {peakElo,eloDay,eloLabel,eloNote} from './elo-tracking.js';
 import {averageStat, numeric} from './insights.js';
+import {creditSvg} from './analyser.js';
 
 const fontFiles = ['Regular', 'Bold'].map(weight => fileURLToPath(new URL(`../assets/fonts/NotoSans-${weight}.ttf`, import.meta.url)));
 let sharpModule, resvgModule;
@@ -15,7 +16,7 @@ export const text = (x,y,value,size=22,fill=colors.text,weight=400,extra='') => 
 export const box = (x,y,w,h,fill=colors.panel,r=16) => `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}" fill="${fill}"/>`;
 export const trim = (value,max) => [...String(value ?? '')].length>max ? [...String(value)].slice(0,max-1).join('')+'…' : String(value ?? '');
 
-export function statsModel({player:p, period='today', matches=[], lifetime={}, ranks={}, label,zone='Europe/Kyiv'}) {
+export function statsModel({player:p, period='today', matches=[], lifetime={}, ranks={}, label,zone='Europe/Kyiv',graph}) {
   const all=period==='all', s=summary(matches), known=s.wins+s.losses;
   const count=all ? numeric(lifetime.Matches) : matches.length;
   const wins=all ? numeric(lifetime.Wins) : s.wins;
@@ -35,7 +36,7 @@ export function statsModel({player:p, period='today', matches=[], lifetime={}, r
   const countryName=country ? new Intl.DisplayNames(['uk'],{type:'region'}).of(country) : 'Країна';
   return {player:p, period, label:label ?? (all?'За весь час':period==='recent'?'Останні 20 матчів':'Сьогодні'), primary, secondary,
     country,countryName, countryRank:rank(ranks.country), regionRank:rank(ranks.region),
-    peak:peakElo(p),change:eloDay(p,dayKey(p.observedAt??Date.now(),zone)),
+    peak:peakElo(p),change:eloDay(p,dayKey(p.observedAt??Date.now(),zone)),graph,
     empty:!all && !matches.length, incomplete, form:all?[]:matches.slice(0,5).map(m=>m.win===true?'W':m.win===false?'L':'—')};
 }
 
@@ -70,9 +71,10 @@ export function statsSvg(model,avatar=null,zone='Europe/Kyiv') {
   const form=model.form.map((value,i)=>box(209+i*54,634,44,36,value==='W'?'#1f3c34':value==='L'?'#422c36':'#2a3040',8)+text(231+i*54,659,value,19,value==='W'?colors.green:value==='L'?colors.red:colors.muted,700,'text-anchor="middle"')).join('');
   const date=Number.isFinite(p.observedAt)?new Date(p.observedAt).toLocaleString('uk-UA',{timeZone:zone,day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'';
   const note=model.empty?'Матчів ще немає · обери інший період':model.incomplete?'AVG за доступними даними':model.period==='all'?'Загальна статистика FACEIT':'AVG / матч · новіші результати ліворуч';
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="748" viewBox="0 0 1120 748">
+  const height=model.graph?1030:748;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="${height}" viewBox="0 0 1120 ${height}">
   <defs><clipPath id="avatar"><circle cx="100" cy="144" r="56"/></clipPath><linearGradient id="glow"><stop stop-color="#ff762d" stop-opacity=".16"/><stop offset="1" stop-color="#ff762d" stop-opacity="0"/></linearGradient></defs>
-  <g font-family="Noto Sans"><rect width="1120" height="748" fill="${colors.bg}"/>
+  <g font-family="Noto Sans"><rect width="1120" height="${height}" fill="${colors.bg}"/>
   <path d="M1120 0H660L930 210H1120Z" fill="url(#glow)"/>
   <path d="M44 36h18l-5 12H44z" fill="${colors.orange}"/>${text(74,49,'BARNI',19,colors.text,700)}${text(166,49,'/ FACEIT CS2',17,colors.muted)}
   ${portrait}<circle cx="100" cy="144" r="58" fill="none" stroke="${colors.stroke}" stroke-width="2"/>
@@ -88,13 +90,31 @@ export function statsSvg(model,avatar=null,zone='Europe/Kyiv') {
   ${box(44,380,1032,108)}${metrics}${box(44,510,1032,94)}${secondary}
   ${model.form.length?text(44,659,'ОСТАННІ',17,colors.muted,700)+form:text(44,660,model.empty?'Матчів не знайдено':'CS2 · FACEIT',21,colors.muted)}
   ${text(44,703,note,14,colors.muted)}${text(44,729,eloNote(p,zone),13,colors.muted)}${text(1076,714,date,16,colors.muted,400,'text-anchor="end"')}
+  ${model.graph?eloChartSvg(model.graph,zone):''}
   </g></svg>`;
+}
+export function eloChartSvg(graph,zone='Europe/Kyiv') {
+  let svg=box(44,764,1032,238)+text(68,801,'ELO · 30 ігрових днів',23,colors.text,700);
+  const points=graph.points??[];
+  if(!points.length)return svg+text(560,905,graph.expected?'Історія Elo поки недоступна':'За цей період матчів немає',22,colors.muted,400,'text-anchor="middle"');
+  const values=points.map(p=>p.elo),min=Math.min(...values),max=Math.max(...values),padding=Math.max(10,(max-min)*.1);
+  const low=min-padding,high=max+padding,from=graph.from,to=Math.max(graph.to,from+1);
+  const x=time=>132+Math.max(0,Math.min(1,(time-from)/(to-from)))*900;
+  const y=elo=>944-(elo-low)/(high-low)*110;
+  for(const value of new Set([min,(min+max)/2,max]))svg+=`<path d="M132 ${y(value)}H1032" stroke="${colors.stroke}" stroke-width="1"/>`+text(112,y(value)+5,n(value),13,colors.muted,400,'text-anchor="end"');
+  const path=points.map((p,i)=>`${i?'L':'M'}${x(p.time).toFixed(1)} ${y(p.elo).toFixed(1)}`).join(' ');
+  svg+=`<path d="${path}" fill="none" stroke="${colors.orange}" stroke-width="3" stroke-linejoin="round"/>`;
+  if(points.length===1)svg+=`<circle cx="${x(points[0].time)}" cy="${y(points[0].elo)}" r="4" fill="${colors.orange}"/>`;
+  const date=time=>new Date(time).toLocaleDateString('uk-UA',{timeZone:zone,day:'2-digit',month:'2-digit'});
+  svg+=text(132,973,date(from),14,colors.muted)+text(1032,973,date(to),14,colors.muted,400,'text-anchor="end"');
+  svg+=text(1052,800,`${graph.covered}/${graph.expected} матчів${graph.complete?'':' · неповні дані'}`,14,colors.muted,400,'text-anchor="end"');
+  return svg;
 }
 
 export async function renderStatsImage(data,{fetcher=fetch,zone='Europe/Kyiv'}={}) {
   const model=statsModel({...data,zone});
   const avatar=await avatarPng(model.player.avatar,fetcher);
-  return renderSvg(statsSvg(model,avatar,zone));
+  return renderSvg(creditSvg(statsSvg(model,avatar,zone),data));
 }
 
 export async function renderSvg(svg) {

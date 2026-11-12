@@ -1,8 +1,9 @@
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 import {ApiError} from './api-error.js';
+import {FaceitAnalyser} from './analyser.js';
 export {ApiError} from './api-error.js';
 export class Api {
-  constructor({ token, faceitKey, fetcher = fetch }) { this.token = token; this.faceitKey = faceitKey; this.fetcher = fetcher; this.cooldown = {}; }
+  constructor({ token, faceitKey, analyserKey, fetcher = fetch }) { this.token = token; this.faceitKey = faceitKey; this.fetcher = fetcher; this.cooldown = {}; this.analyser=new FaceitAnalyser({key:analyserKey,fetcher}); }
   async request(service, url, options = {}) {
     if ((this.cooldown[service] ?? 0) > Date.now()) throw new ApiError(service, 429, 'Сервіс просить зачекати.');
     for (let attempt = 0; attempt < 3; attempt++) {

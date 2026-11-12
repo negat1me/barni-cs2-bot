@@ -53,6 +53,7 @@ export function lastMatchCard(p, m, zone) {
   const score = own != null && other != null ? `${own} : ${other}` : m.score || '—';
   const result = m.win === true ? '🟢 WIN' : m.win === false ? '🔴 LOSS' : '⚪ Результат —';
   const lines = [header(p), '', `<b>${result}  ·  ${h(score)}</b>`, `🗺 <b>${mapName(m.map)}</b>`];
+  lines.push(`Δ ELO за матч <b>${m.eloDelta==null?'—':(m.eloDelta>0?'+':'')+m.eloDelta}</b>`);
   if (m.team && m.opponent) lines.push(`${h(m.team)} — ${h(m.opponent)}`);
   const date = Number.isFinite(m.finished) && m.finished > 0
     ? new Date(m.finished).toLocaleString('uk-UA', {timeZone: zone, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'}) : '';

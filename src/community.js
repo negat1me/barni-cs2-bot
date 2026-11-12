@@ -4,6 +4,8 @@ import { tag, nicknameFrom, escapeHtml as h } from './domain.js';
 import { compareCard } from './cards.js';
 import {teamMentions,balanceTeams} from './teams.js';
 import {trackElo} from './elo-tracking.js';
+import {mapStats,bestMatches,partyMapSummary} from './analytics.js';
+import {analyserCredit} from './analyser.js';
 
 const mention = user => `<a href="tg://user?id=${user.id}">${h(user.first_name || user.name || 'Гравець')}</a>`;
 const present = member => !['left', 'kicked'].includes(member.status) && !(member.status === 'restricted' && member.is_member === false);
@@ -11,7 +13,7 @@ export class Community {
   constructor(bot) { this.bot = bot; this.sampleCache = new Map(); }
   async profile(uid) {
     const p = this.bot.player(uid);
-    return this.faceitProfile(await this.bot.api.faceit(`/players/${p.id}`));
+    return this.bot.enrichPeak(this.faceitProfile(await this.bot.api.faceit(`/players/${p.id}`)));
   }
   faceitProfile(profile) {
     const game = profile.games?.cs2;
@@ -34,10 +36,12 @@ export class Community {
       b = await this.profile(target.id);
     }
     if (a.id === b.id) throw new Error('Обери іншого гравця для порівняння.');
+    b=await this.bot.enrichPeak(b);
     const samples = [];
     for (const p of [a, b]) {
       const matches = await this.bot.recent(p);
       await this.bot.details(p, matches);
+      const analytics=await this.bot.analytics(p);this.bot.applyMatchElo(matches,analytics);
       samples.push(matches);
     }
     return this.bot.sendImage(message.chat.id,'compare',{a,b,aMatches:samples[0],bMatches:samples[1]}, {
@@ -83,11 +87,31 @@ export class Community {
   async form(message,user) {
     const target=message.reply_to_message?.from ?? user;
     const p=await this.profile(target.id);
+    await this.bot.analytics(p);
     const matches=await this.samples(p.id);
     return this.bot.sendImage(message.chat.id,'form',{player:p,matches}, {
       caption:`<b>${h(p.nickname)}</b> · Форма · останні ${Math.min(matches.length,10)} / попередні ${Math.max(0,matches.length-10)}`,
       fallback:formCard(p,matches)
     });
+  }
+  async performanceData(user) {
+    const p=await this.profile(user.id),analytics=await this.bot.analytics(p);
+    if(analytics?.available)return {...analytics,player:p};
+    const matches=await this.bot.recent(p);await this.bot.details(p,matches);
+    const best=bestMatches(matches);
+    return {player:p,matches,maps:mapStats(matches),best,covered:matches.length,mapCovered:new Set(matches.filter(m=>m.map).map(m=>m.id)).size,expected:matches.length,complete:true,bestComplete:best.every(record=>record.covered===matches.length),period:`Останні матчі · ${matches.length}`,analyserUsed:false};
+  }
+  async maps(message,user) {
+    const target=message.reply_to_message?.from??user,data=await this.performanceData(target);
+    const fallback=[`<b>${h(data.player.nickname)} · Карти</b>`,h(data.period),...data.maps.map(row=>`${h(row.map.replace(/^de_/,''))} · ${row.count}g · WR ${row.wr==null?'—':Math.round(row.wr)+'%'} · ADR ${row.adr==null?'—':row.adr.toFixed(1)} · K/D ${row.kd==null?'—':row.kd===Infinity?'∞':row.kd.toFixed(2)}`),...(data.maps.length?[]:['Матчів із відомою картою немає.']),`<i>Покриття ${data.mapCovered??data.covered}/${data.expected}${data.complete&&(data.mapCovered??data.covered)===data.expected?'':' · неповні дані'} · менше 5 матчів — мала вибірка</i>`].join('\n');
+    return this.bot.sendImage(message.chat.id,'maps',data,{caption:`<b>${h(data.player.nickname)}</b> · Карти · ${h(data.period)}`,fallback});
+  }
+  async bestmatch(message,user) {
+    const target=message.reply_to_message?.from??user,data=await this.performanceData(target);
+    const records=data.best.filter(r=>r.match);
+    const fallback=[`<b>${h(data.player.nickname)} · Найкращі матчі</b>`,h(data.period),...records.map(r=>`${h(r.label)}: <b>${r.value===Infinity?'∞':r.value.toFixed(r.key==='kills'?0:r.key==='adr'?1:2)}</b> · ${h(r.match.map??'—')} · <a href="${h(r.match.url)}">Матч ↗</a>`),...(!records.length?['Показники матчів поки недоступні.']:[]),`<i>Покриття ${data.covered}/${data.expected}${data.bestComplete?'':' · рекорди лише за доступною вибіркою'}</i>`].join('\n');
+    const reply_markup={inline_keyboard:records.map(r=>[{text:r.label+' ↗',url:r.match.url}])};
+    return this.bot.sendImage(message.chat.id,'best',data,{caption:`<b>${h(data.player.nickname)}</b> · Найкращі · ${h(data.period)}`,fallback,reply_markup});
   }
   async taglist(chat,now=Date.now()) {
     const group=this.bot.group(chat), entries=Object.entries(group.customTags ?? {});
@@ -119,24 +143,31 @@ export class Community {
   }
   async partyCard(party) {
     const lines = [`<b>👥 PARTY · ${party.participants.length}/5</b>`, ...(party.text ? [h(party.text)] : []), ''];
-    const ratings = [], samples = [];
+    const ratings = [], samples = [],profiles=new Map(),mapSets=[];
+    let analyserUsed=false,mixed=false;
     for (const [index, member] of party.participants.entries()) {
       let p;
       if (this.bot.s.users[member.id]) {
         try { p = await this.profile(member.id); ratings.push(p.elo); } catch { /* Party remains usable during FACEIT outages. */ }
       }
       lines.push(`${index + 1}. ${await this.partyName(member,p??null)}${p ? ` · <b>${p.elo} ELO</b>` : ' · ELO —'}`);
+      if(p)profiles.set(member.id,p);
     }
     for(const member of party.participants) {
       const id=this.bot.s.users[member.id]?.playerId;
-      if(id)try{samples.push(await this.samples(id));}catch{}
+      if(id)try {
+        const p=profiles.get(member.id),analytics=p?await this.bot.analytics(p):null;
+        if(analytics?.available){mapSets.push(analytics.maps);analyserUsed=true;}
+        else {const matches=await this.samples(id);samples.push(matches);mapSets.push(mapStats(matches));mixed=true;}
+      }catch{}
     }
     for (let i = party.participants.length; i < 5; i++) lines.push(`${i + 1}. <i>Вільне місце</i>`);
     if (ratings.length) lines.push('', `AVG ELO <b>${Math.round(ratings.reduce((a,b) => a+b, 0) / ratings.length)}</b>${ratings.length < party.participants.length ? ` · дані ${ratings.length}/${party.participants.length}` : ''}`);
     if(party.reserves?.length)lines.push('', '<b>Запасні</b>', (await Promise.all(party.reserves.map(m=>this.partyName(m)))).join(', '));
-    lines.push('',stackMaps(samples,party.participants.length));
+    lines.push('',analyserUsed?partyMapSummary(mapSets,party.participants.length,mixed):stackMaps(samples,party.participants.length));
     if(party.startsAt)lines.push('', `⏰ ${h(this.bot.time(party.startsAt))} · ${h(this.bot.zone)}`, party.reminderMissed ? '<i>Час нагадування минув</i>' : party.remindedAt ? '<i>Нагадування надіслано</i>' : '<i>Нагадування: за 10 хв або в час старту</i>');
     lines.push('', party.participants.length === 5 ? '✅ П’ятірка зібрана!' : 'Натисни «Я граю», щоб приєднатися.');
+    if(analyserUsed)lines.push('',analyserCredit);
     return lines.join('\n');
   }
   partyKeyboard(party) {
