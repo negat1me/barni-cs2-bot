@@ -1,10 +1,13 @@
-import {renderAsync} from '@resvg/resvg-js';
-import sharp from 'sharp';
 import {fileURLToPath} from 'node:url';
-import {escapeHtml as xml, summary} from './domain.js';
+import {escapeHtml as xml, summary,dayKey} from './domain.js';
+import {peakElo,eloDay,eloLabel,eloNote} from './elo-tracking.js';
 import {averageStat, numeric} from './insights.js';
 
 const fontFiles = ['Regular', 'Bold'].map(weight => fileURLToPath(new URL(`../assets/fonts/NotoSans-${weight}.ttf`, import.meta.url)));
+let sharpModule, resvgModule;
+// Native modules load only when an image is requested. A broken binary must not
+// prevent the bot from starting and serving the existing text fallbacks.
+const loadSharp = () => sharpModule ??= import('sharp').then(module => module.default);
 export const colors = {bg:'#10131b', panel:'#191e2a', stroke:'#293143', muted:'#929daf', text:'#f5f7fc', orange:'#ff762d', green:'#64d9a0', red:'#f47c85'};
 export const n = (value, digits=0, suffix='') => numeric(value)==null ? '—' : Number(value).toLocaleString('en-US', {minimumFractionDigits:digits, maximumFractionDigits:digits, useGrouping:false})+suffix;
 const rank = value => numeric(value)>0 ? '#'+Number(value).toLocaleString('en-US') : '—';
@@ -12,7 +15,7 @@ export const text = (x,y,value,size=22,fill=colors.text,weight=400,extra='') => 
 export const box = (x,y,w,h,fill=colors.panel,r=16) => `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}" fill="${fill}"/>`;
 export const trim = (value,max) => [...String(value ?? '')].length>max ? [...String(value)].slice(0,max-1).join('')+'…' : String(value ?? '');
 
-export function statsModel({player:p, period='today', matches=[], lifetime={}, ranks={}, label}) {
+export function statsModel({player:p, period='today', matches=[], lifetime={}, ranks={}, label,zone='Europe/Kyiv'}) {
   const all=period==='all', s=summary(matches), known=s.wins+s.losses;
   const count=all ? numeric(lifetime.Matches) : matches.length;
   const wins=all ? numeric(lifetime.Wins) : s.wins;
@@ -32,6 +35,7 @@ export function statsModel({player:p, period='today', matches=[], lifetime={}, r
   const countryName=country ? new Intl.DisplayNames(['uk'],{type:'region'}).of(country) : 'Країна';
   return {player:p, period, label:label ?? (all?'За весь час':period==='recent'?'Останні 20 матчів':'Сьогодні'), primary, secondary,
     country,countryName, countryRank:rank(ranks.country), regionRank:rank(ranks.region),
+    peak:peakElo(p),change:eloDay(p,dayKey(p.observedAt??Date.now(),zone)),
     empty:!all && !matches.length, incomplete, form:all?[]:matches.slice(0,5).map(m=>m.win===true?'W':m.win===false?'L':'—')};
 }
 
@@ -40,6 +44,7 @@ export async function avatarPng(url, fetcher=fetch) {
   try {
     const u=new URL(url);
     if(u.protocol!=='https:' || u.username || u.password || u.port || !['assets.faceit-cdn.net','distribution.faceit-cdn.net','cdn.faceit.com'].includes(u.hostname))return null;
+    const sharp=await loadSharp();
     const response=await fetcher(u.href,{signal:AbortSignal.timeout(5000),redirect:'error'});
     if(!response.ok || !/^image\/(png|jpeg|webp|gif)(?:;|$)/i.test(response.headers.get('content-type') ?? '') || Number(response.headers.get('content-length'))>2*1024*1024)return null;
     const chunks=[];let size=0;
@@ -75,23 +80,25 @@ export function statsSvg(model,avatar=null,zone='Europe/Kyiv') {
   ${box(180,157,86,31,'#442a22',8)}${text(223,179,`LVL ${p.level ?? '—'}`,16,colors.orange,700,'text-anchor="middle"')}
   ${text(282,179,[model.country,p.region].filter(Boolean).join('  ·  '),19,colors.muted)}
   ${text(1076,104,'ELO',18,colors.muted,700,'text-anchor="end"')}${text(1076,169,n(p.elo),61,colors.orange,700,'text-anchor="end"')}
+  ${text(1076,203,`MAX ${n(model.peak)} · Δ день ${eloLabel(model.change)}`,17,colors.muted,400,'text-anchor="end"')}
   ${box(44,224,506,80)}${box(570,224,506,80)}${countryIcon}
   ${text(112,271,trim(model.countryName,22),21,colors.muted)}${text(526,274,model.countryRank,32,colors.text,700,'text-anchor="end"')}
   ${text(594,271,p.region?`Регіон ${p.region}`:'Регіон',21,colors.muted)}${text(1052,274,model.regionRank,32,colors.text,700,'text-anchor="end"')}
   ${text(44,351,model.label,26,colors.text,700)}${text(1076,350,model.period==='all'?'LIFETIME':'PERFORMANCE',16,colors.orange,700,'text-anchor="end"')}
   ${box(44,380,1032,108)}${metrics}${box(44,510,1032,94)}${secondary}
   ${model.form.length?text(44,659,'ОСТАННІ',17,colors.muted,700)+form:text(44,660,model.empty?'Матчів не знайдено':'CS2 · FACEIT',21,colors.muted)}
-  ${text(44,714,note,16,colors.muted)}${text(1076,714,date,16,colors.muted,400,'text-anchor="end"')}
+  ${text(44,703,note,14,colors.muted)}${text(44,729,eloNote(p,zone),13,colors.muted)}${text(1076,714,date,16,colors.muted,400,'text-anchor="end"')}
   </g></svg>`;
 }
 
 export async function renderStatsImage(data,{fetcher=fetch,zone='Europe/Kyiv'}={}) {
-  const model=statsModel(data);
+  const model=statsModel({...data,zone});
   const avatar=await avatarPng(model.player.avatar,fetcher);
   return renderSvg(statsSvg(model,avatar,zone));
 }
 
 export async function renderSvg(svg) {
+  const {renderAsync}=await (resvgModule ??= import('@resvg/resvg-js'));
   const rendered=await renderAsync(svg,{font:{fontFiles,loadSystemFonts:false,defaultFontFamily:'Noto Sans'}});
   return rendered.asPng();
 }

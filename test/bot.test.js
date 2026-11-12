@@ -153,6 +153,25 @@ test('rankings use official region and country positions and tolerate missing ra
  assert.deepEqual(await bot.rankings({id:'p',region:'EU',country:'ua'}),{country:null,region:null});
 });
 
+test('fresh profile Elo is tracked and tags update even when match history fails',async()=>{
+ const {bot,api,state,calls}=fixture();state.users[1]={playerId:'p'};state.players.p={id:'p'};
+ api.faceit=async()=>({nickname:'Player',games:{cs2:{faceit_elo:2200,skill_level:10}}});
+ api.history=async()=>{throw new Error('History unavailable');};
+ await assert.rejects(bot.refresh('p'));
+ assert.equal(state.players.p.eloTracking.peak,2200);
+ await bot.updateTags(-1,{members:['1'],tags:true,tagState:{}});
+ assert.equal(calls.find(([method])=>method==='setChatMemberTag')[1].tag,'2200 ELO | ↑2200');
+});
+
+test('daily gain leaderboard sorts actual tracked changes rather than current Elo',async()=>{
+ const {bot,state,calls}=fixture();const day='2026-11-11';
+ const rows=[{uid:'1',p:{id:'a',nickname:'Higher',elo:3000,eloTracking:{peak:3000,days:{[day]:{start:3025,end:3000,partial:false}}}}},{uid:'2',p:{id:'b',nickname:'Gain',elo:2100,eloTracking:{peak:2100,days:{[day]:{start:2050,end:2100,partial:true}}}}}];
+ bot.members=async()=>rows;bot.refresh=async()=>{};
+ let rendered;bot.renderImage=async(kind,data)=>{rendered=data;return Buffer.from('png');};
+ await bot.leaderboard({id:-1,type:'supergroup'},'day',day);
+ assert.equal(rendered.rows[0].p.id,'b');assert.deepEqual(rendered.rows[0].change,{value:50,partial:true});assert.equal(calls.at(-1)[0],'sendPhoto');
+});
+
 test('Telegram multipart uploads preserve binary PNG, JSON media and keyboard',async()=>{
  let payload;
  const api=new Api({token:'fake',faceitKey:'fake',fetcher:async(_,options)=>{payload=options;return new Response(JSON.stringify({ok:true,result:{message_id:5}}));}});

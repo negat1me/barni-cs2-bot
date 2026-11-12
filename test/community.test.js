@@ -81,7 +81,7 @@ test('expiry restores fresh FACEIT tag for linked players', async () => {
   f.bot.refresh = async () => ({elo:2345, matches:{}});
   const t = f.state.chats[-1].customTags[2];
   await f.bot.community.expireTags(t.expiresAt + 1);
-  assert.equal(f.calls.filter(([m]) => m === 'setChatMemberTag').at(-1)[1].tag, '2345 ELO');
+  assert.equal(f.calls.filter(([m]) => m === 'setChatMemberTag').at(-1)[1].tag, '2345 ELO | ↑2345');
 });
 test('failed restoration retains expiry for retry and blocks FACEIT overwrite', async () => {
   const f = fixture(); await f.command(1, '/tag 1 temp', 2);

@@ -1,10 +1,11 @@
 import { escapeHtml as h, summary } from './domain.js';
+import {peakElo,latestEloDay,eloLabel,eloNote} from './elo-tracking.js';
 
 const number = value => value == null || String(value).trim() === '' || !Number.isFinite(Number(value)) ? null : Number(value);
 const fmt = value => Number(value).toLocaleString('uk-UA', { maximumFractionDigits: 1 });
 const metric = (value, suffix = '') => number(value) == null ? '—' : `${h(value)}${suffix}`;
-const header = p => `<b>🎮 ${h(p.nickname)}</b>\nLVL <b>${h(p.level)}</b>  ·  <b>${fmt(p.elo)} ELO</b>`;
-const footer = (p, zone) => `\n\n<a href="https://www.faceit.com/en/players/${encodeURIComponent(p.nickname)}">FACEIT ↗</a>  ·  <i>${new Date(p.observedAt).toLocaleTimeString('uk-UA', {timeZone: zone, hour: '2-digit', minute: '2-digit'})}</i>`;
+const header = p => `<b>🎮 ${h(p.nickname)}</b>\nLVL <b>${h(p.level)}</b>  ·  <b>${fmt(p.elo)} ELO</b>\nMAX <b>${peakElo(p)??'—'}</b> · Δ день <b>${eloLabel(latestEloDay(p))}</b>`;
+const footer = (p, zone) => `\n<i>${h(eloNote(p,zone))}</i>\n\n<a href="https://www.faceit.com/en/players/${encodeURIComponent(p.nickname)}">FACEIT ↗</a>  ·  <i>${new Date(p.observedAt).toLocaleTimeString('uk-UA', {timeZone: zone, hour: '2-digit', minute: '2-digit'})}</i>`;
 const statNumber = (m, key) => number(m.stats?.[key]);
 function average(matches, key, digits=1) {
   const values = matches.map(m => statNumber(m, key)).filter(v => v != null);
@@ -64,7 +65,7 @@ export function lastMatchCard(p, m, zone) {
   const multi = statLine([['2K', s['Double Kills']], ['3K', s['Triple Kills']], ['4K', s['Quadro Kills']], ['ACE', s['Penta Kills']]].filter(([,value]) => number(value) > 0));
   if (multi) lines.push('', `💥 ${multi}`);
   if (!m.stats || ['Kills', 'Deaths', 'Assists'].some(key => number(s[key]) == null)) lines.push('<i>Частина даних ще недоступна</i>');
-  lines.push('', '<i>LVL / ELO — поточні</i>');
+  lines.push('', '<i>LVL / ELO — поточні</i>',`<i>${h(eloNote(p,zone))}</i>`);
   return lines.join('\n');
 }
 
@@ -74,7 +75,7 @@ export function compareCard(a, b, aMatches, bMatches) {
   const line = (label, left, right) => `${label}  <b>${left}</b> / <b>${right}</b>`;
   return [
     '<b>⚔️ FACEIT · Compare</b>', `${h(a.nickname)} 🆚 ${h(b.nickname)}`, '',
-    line('ELO', a.elo, b.elo), line('LVL', a.level, b.level), '',
+    line('ELO', a.elo, b.elo), line('MAX',peakElo(a)??'—',peakElo(b)??'—'), line('Δ день',eloLabel(latestEloDay(a)),eloLabel(latestEloDay(b))), line('LVL', a.level, b.level), '',
     '<b>Останні 20 матчів · лівий / правий</b>',
     line('Матчі', aMatches.length, bMatches.length),
     line('W–L', `${first.wins}–${first.losses}`, `${second.wins}–${second.losses}`),

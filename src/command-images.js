@@ -1,5 +1,6 @@
 import {colors as c, n, text as t, box as b, trim, avatarPng, renderSvg} from './stats-image.js';
 import {summary, escapeHtml as xml} from './domain.js';
+import {peakElo,eloDay,eloLabel,eloNote} from './elo-tracking.js';
 import {averageStat, numeric} from './insights.js';
 
 const middle='text-anchor="middle"', end='text-anchor="end"';
@@ -8,6 +9,9 @@ const ratio=matches=>summary(matches).kd==='∞'?Infinity:numeric(summary(matche
 const wr=matches=>{const s=summary(matches);return s.wins+s.losses?100*s.wins/(s.wins+s.losses):null;};
 const kda=matches=>['Kills','Deaths','Assists'].map(key=>averageStat(matches,key));
 const partial=matches=>matches.some(m=>m.win==null || ['Kills','Deaths','Assists','ADR','Headshots %','K/R Ratio'].some(key=>numeric(m.stats?.[key])==null));
+const currentChange=p=>eloDay(p,Object.keys(p.eloTracking?.days??{}).sort().at(-1));
+const deltaColor=change=>!change||!change.value?c.muted:change.value>0?c.green:c.red;
+const eloHeader=p=>`MAX ${fmt(peakElo(p))} · Δ день ${eloLabel(currentChange(p))}`;
 const profileUrl=p=>`https://www.faceit.com/en/players/${encodeURIComponent(p.nickname)}`;
 export {profileUrl};
 
@@ -31,7 +35,7 @@ function playerName(x,y,name,width,maxChars=28,size=36) {
   return t(x,y,value,Math.min(size,width/Math.max(1,value.length*.96)),c.text,700);
 }
 function playerHeader(p,image) {
-  return portrait(p,image,44,88,96,'player-avatar')+playerName(164,130,p.nickname,680)+t(164,166,`LVL ${p.level??'—'}  ·  ${p.region??'CS2'}`,19,c.muted)+t(1076,124,fmt(p.elo),47,c.orange,700,end)+t(1076,160,'ELO · поточне',16,c.muted,400,end);
+  return portrait(p,image,44,88,96,'player-avatar')+playerName(164,130,p.nickname,680)+t(164,166,`LVL ${p.level??'—'}  ·  ${p.region??'CS2'}`,19,c.muted)+t(1076,124,fmt(p.elo),47,c.orange,700,end)+t(1076,160,'ELO · поточне',16,c.muted,400,end)+t(1076,194,eloHeader(p),16,c.muted,400,end);
 }
 function formStrip(matches,x,y,limit=5) {
   return matches.slice(0,limit).map((m,i)=>{
@@ -45,27 +49,27 @@ export function leaderboardPages(rows,size=10) {
   for(let i=0;i<rows.length;i+=size)pages.push({rows:rows.slice(i,i+size),offset:i});
   return pages.length?pages:[{rows:[],offset:0}];
 }
-export function leaderboardSvg({rows,kind='top',day='',offset=0,page=1,pages=1,zone='Europe/Kyiv'},avatars=[]) {
+export function leaderboardSvg({rows,kind='top',mode='elo',day='',offset=0,page=1,pages=1},avatars=[]) {
   const daily=kind==='summary', h=rows.length?230+rows.length*84:340;
   const palette=['#edc775','#bdc9df','#d69e7a'];
   let body=t(72,160,'#',17,c.muted,700)+t(daily?125:200,160,'ГРАВЕЦЬ',17,c.muted,700);
-  body+=daily?t(658,160,'МАТЧІ',17,c.muted,700,middle)+t(841,160,'W / L',17,c.muted,700,middle)+t(1048,160,'WR',17,c.muted,700,end)
-    :t(790,160,'LVL',17,c.muted,700,middle)+t(1048,160,'ELO',17,c.muted,700,end);
-  rows.forEach(({p,matches=[]},i)=>{
+  body+=daily?t(590,160,'МАТЧІ',16,c.muted,700,middle)+t(740,160,'W / L',16,c.muted,700,middle)+t(886,160,'WR',16,c.muted,700,middle)+t(1048,160,'Δ ELO',16,c.muted,700,end)
+    :t(790,160,mode==='elo'?'MAX':'ELO',17,c.muted,700,middle)+t(1048,160,mode==='elo'?'ELO':mode==='week'?'Δ WEEK':'Δ DAY',17,c.muted,700,end);
+  rows.forEach(({p,matches=[],change=eloDay(p,day)},i)=>{
     const y=180+i*84,place=offset+i+1,color=!daily&&place<=3?palette[place-1]:c.muted;
     body+=b(44,y,1032,72,!daily&&place<=3?['#2b271f','#242a36','#2e2524'][place-1]:c.panel,12)+t(72,y+45,place,25,color,700);
     if(daily) {
-      const s=summary(matches);
-      body+=playerName(125,y+31,p.nickname,420,27,23)+t(125,y+55,`${fmt(p.elo)} ELO`,16,c.muted)
-        +t(658,y+45,matches.length,27,c.text,700,middle)
-        +`<text x="841" y="${y+45}" font-size="25" font-weight="700" text-anchor="middle"><tspan fill="${c.green}">${s.wins}</tspan><tspan fill="${c.muted}"> / </tspan><tspan fill="${c.red}">${s.losses}</tspan></text>`
-        +t(1048,y+45,fmt(wr(matches),0,'%'),27,c.text,700,end);
-    } else body+=portrait(p,avatars[i],125,y+12,48,`row-avatar-${i}`)+playerName(200,y+45,p.nickname,480,29,25)+t(790,y+45,fmt(p.level),25,c.muted,700,middle)+t(1048,y+46,fmt(p.elo),33,color===c.muted?c.orange:color,700,end);
+      const result=summary(matches);
+      body+=playerName(125,y+31,p.nickname,370,27,23)+t(125,y+55,`${fmt(p.elo)} ELO · MAX ${fmt(peakElo(p))}`,15,c.muted)
+        +t(590,y+45,matches.length,26,c.text,700,middle)
+        +`<text x="740" y="${y+45}" font-size="24" font-weight="700" text-anchor="middle"><tspan fill="${c.green}">${result.wins}</tspan><tspan fill="${c.muted}"> / </tspan><tspan fill="${c.red}">${result.losses}</tspan></text>`
+        +t(886,y+45,fmt(wr(matches),0,'%'),25,c.text,700,middle)+t(1048,y+45,eloLabel(change),26,deltaColor(change),700,end);
+    } else body+=portrait(p,avatars[i],125,y+12,48,`row-avatar-${i}`)+playerName(200,y+31,p.nickname,480,29,25)+t(200,y+57,mode==='elo'?`Δ день ${eloLabel(change)}`:`MAX ${fmt(peakElo(p))}`,16,c.muted)+t(790,y+45,fmt(mode==='elo'?peakElo(p):p.elo),25,c.muted,700,middle)+t(1048,y+46,mode==='elo'?fmt(p.elo):eloLabel(change),33,mode==='elo'?(color===c.muted?c.orange:color):deltaColor(change),700,end);
   });
   if(!rows.length)body+=t(560,246,'Поки немає результатів',25,c.muted,400,middle);
   const missing=rows.some(r=>r.matches?.some(m=>m.win==null));
-  const footer=(daily?`Доба 07:00–07:00 · ${zone} · порядок за поточним Elo`:'Поточний Elo · учасники чату')+(missing?' · є невідомі результати':'')+(pages>1?` · ${page}/${pages}`:'');
-  return frame(h,daily?'SUMMARY':'LEADERBOARD',daily?`Підсумок · ${day.split('-').reverse().join('.')}`:'Топ чату',body,footer);
+  const footer=(daily?'Доба 07:00–07:00 · MAX від початку трекінгу':'MAX від початку трекінгу')+' · ~ неповний період'+(missing?' · є невідомі результати':'')+(pages>1?` · ${page}/${pages}`:'');
+  return frame(h,daily?'SUMMARY':'LEADERBOARD',daily?`Підсумок · ${day.split('-').reverse().join('.')}`:mode==='elo'?'Топ чату':mode==='week'?'Приріст Elo · 7 днів':'Приріст Elo · ігровий день',body,footer);
 }
 
 export function compareModel({a,b,aMatches,bMatches}) {
@@ -101,12 +105,14 @@ export function compareSvg(model,avatars=[]) {
   let body=b(44,88,498,116)+b(578,88,498,116)+portrait(a,avatars[0],68,106,76,'a-avatar')+portrait(other,avatars[1],602,106,76,'b-avatar')
     +playerName(164,138,a.nickname,350,20,28)+playerName(698,138,other.nickname,350,20,28)
     +t(164,174,`LVL ${a.level??'—'} · ${aMatches.length} матчів`,18,c.muted)+t(698,174,`LVL ${other.level??'—'} · ${bMatches.length} матчів`,18,c.muted);
+  body+=t(164,195,eloHeader(a),14,c.muted)+t(698,195,eloHeader(other),14,c.muted);
   model.metrics.forEach((metric,i)=>{
     const y=228+i*68;
     body+=b(44,y,1032,58)+t(560,y+36,metric.label,17,c.muted,700,middle)+compared(metric,286,y+40,'left')+compared(metric,832,y+40,'right');
   });
   body+=formStrip(aMatches,170,730)+formStrip(bMatches,704,730);
-  return frame(826,'COMPARE','',body,`Останні до 20 матчів · AVG / матч · ELO поточне${model.incomplete?' · неповні дані':''}`);
+  body+=t(44,798,'MAX від початку трекінгу · ~ зміна за неповний день',14,c.muted);
+  return frame(852,'COMPARE','',body,`Останні до 20 матчів · AVG / матч · ELO поточне${model.incomplete?' · неповні дані':''}`);
 }
 
 export function lastModel({player,match:m},zone='Europe/Kyiv') {
@@ -120,7 +126,7 @@ export function lastModel({player,match:m},zone='Europe/Kyiv') {
     adr:fmt(s.ADR,1),hs:fmt(s['Headshots %'],0,'%'),kr:fmt(s['K/R Ratio'],2),
     multi:[['2K','Double Kills'],['3K','Triple Kills'],['4K','Quadro Kills'],['ACE','Penta Kills']].filter(([,k])=>numeric(s[k])>0).map(([label,key])=>`${label} ${fmt(s[key])}`).join('   ·   '),incomplete:partial([m])};
 }
-export function lastSvg(model,avatars=[]) {
+export function lastSvg(model,avatars=[],zone='Europe/Kyiv') {
   const m=model.match;
   let body=playerHeader(model.player,avatars[0])+b(44,220,1032,164)+t(68,260,model.result,22,model.color,700)
     +t(68,328,trim(model.map.toUpperCase(),21),48,c.text,700)+t(1048,326,model.score,70,model.color,700,end)
@@ -130,7 +136,8 @@ export function lastSvg(model,avatars=[]) {
   for(const [label,value,width] of metrics){body+=t(x+24,445,label,18,c.muted,700)+t(x+24,494,value,label==='K/D/A'?43:39,c.text,700);x+=width;}
   body+=b(44,542,1032,84)+t(68,573,'K/R',17,c.muted,700)+t(68,607,model.kr,27,c.text,700)+t(300,594,model.multi||'CS2 · матч завершено',23,c.muted);
   body+=t(44,674,model.context,20,c.muted);
-  return frame(740,'ОСТАННІЙ МАТЧ','',body,`LVL / ELO — поточні${model.incomplete?' · частина показників недоступна':''}`);
+  body+=t(44,712,eloNote(model.player,zone),14,c.muted);
+  return frame(770,'ОСТАННІЙ МАТЧ','',body,`LVL / ELO — поточні${model.incomplete?' · частина показників недоступна':''}`);
 }
 
 export function formModel({player,matches}) {
@@ -142,7 +149,7 @@ export function formModel({player,matches}) {
   });
   return {player,recent,previous,metrics,incomplete:matches.length<20||matches.some(m=>m.win==null||['Kills','Deaths','ADR'].some(k=>numeric(m.stats?.[k])==null))};
 }
-export function formSvg(model,avatars=[]) {
+export function formSvg(model,avatars=[],zone='Europe/Kyiv') {
   let body=playerHeader(model.player,avatars[0])+t(68,248,'ПОКАЗНИК',17,c.muted,700)+t(476,248,`Попередні ${model.previous.length}`,19,c.muted,700,middle)+t(748,248,`Останні ${model.recent.length}`,19,c.text,700,middle)+t(1048,248,'ЗМІНА',17,c.muted,700,end);
   model.metrics.forEach((metric,i)=>{
     const y=270+i*90,color=metric.delta==null||metric.delta===0?c.muted:metric.delta>0?c.green:c.red;
@@ -152,7 +159,8 @@ export function formSvg(model,avatars=[]) {
     body+=b(44,y,1032,76)+t(68,y+48,metric.label,22,c.muted,700)+t(476,y+50,fmt(metric.old,metric.digits,metric.suffix),32,c.muted,700,middle)+t(748,y+50,fmt(metric.current,metric.digits,metric.suffix),35,color===c.muted?c.text:color,700,middle)+arrow+t(1048,y+48,delta,24,color,700,end);
   });
   body+=model.recent.length?t(44,685,'ОСТАННІ',17,c.muted,700)+formStrip(model.recent,220,660,10):t(44,686,'Завершених матчів немає',23,c.muted);
-  return frame(758,'ФОРМА','',body,`AVG / матч · новіші результати ліворуч${model.incomplete?' · неповна вибірка або дані':''}`);
+  body+=t(44,730,eloNote(model.player,zone),14,c.muted);
+  return frame(788,'ФОРМА','',body,`AVG / матч · новіші результати ліворуч${model.incomplete?' · неповна вибірка або дані':''}`);
 }
 
 async function avatarsFor(players,fetcher) {
@@ -162,13 +170,26 @@ async function avatarsFor(players,fetcher) {
   }));
   return result;
 }
+export function teamsSvg({a,b:other,avgA,avgB,difference},avatars=[]) {
+  let body='';
+  for(const [side,players,average,x,color] of [['A',a,avgA,44,'#7caef5'],['B',other,avgB,578,c.orange]]) {
+    body+=b(x,140,498,92,side==='A'?'#1d2b3f':'#33271f')+t(x+24,180,`TEAM ${side}`,23,color,700)+t(x+474,172,'AVG ELO',16,c.muted,700,end)+t(x+474,216,fmt(average,1),35,color,700,end);
+    players.forEach((p,i)=>{
+      const y=252+i*84,image=avatars[(side==='A'?0:5)+i];
+      body+=b(x,y,498,72)+portrait(p,image,x+18,y+12,48,`team-${side}-${i}`)+playerName(x+84,y+32,p.nickname,260,22,23)+t(x+84,y+56,`LVL ${p.level??'—'} · MAX ${fmt(peakElo(p))}`,15,c.muted)+t(x+474,y+45,fmt(p.elo),26,c.text,700,end);
+    });
+  }
+  body+=b(44,694,1032,72)+t(68,737,'Різниця AVG ELO',22,c.muted,700)+t(1052,741,fmt(difference,1),36,c.green,700,end);
+  return frame(828,'TEAMS','Команди · 5 vs 5',body,'Баланс за поточним Elo · MAX від початку трекінгу');
+}
 export async function renderCommandImage(kind,data,{fetcher=fetch,zone='Europe/Kyiv'}={}) {
+  if(kind==='teams')return renderSvg(teamsSvg(data,await avatarsFor([...data.a,...data.b],fetcher)));
   if(kind==='top'||kind==='summary') {
     const avatars=kind==='top'?await avatarsFor(data.rows.map(r=>r.p),fetcher):[];
     return renderSvg(leaderboardSvg({...data,kind,zone},avatars));
   }
   if(kind==='compare')return renderSvg(compareSvg(compareModel(data),await avatarsFor([data.a,data.b],fetcher)));
-  if(kind==='last')return renderSvg(lastSvg(lastModel(data,zone),await avatarsFor([data.player],fetcher)));
-  if(kind==='form')return renderSvg(formSvg(formModel(data),await avatarsFor([data.player],fetcher)));
+  if(kind==='last')return renderSvg(lastSvg(lastModel(data,zone),await avatarsFor([data.player],fetcher),zone));
+  if(kind==='form')return renderSvg(formSvg(formModel(data),await avatarsFor([data.player],fetcher),zone));
   throw new Error('Unknown image kind');
 }

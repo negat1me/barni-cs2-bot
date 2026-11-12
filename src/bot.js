@@ -1,6 +1,7 @@
 import {renderStatsImage} from './stats-image.js';
 import {renderCommandImage, leaderboardPages} from './command-images.js';
 import {loadSamples} from './insights.js';
+import {trackElo,eloDay,eloWeek,eloLabel,peakElo} from './elo-tracking.js';
 import { Community } from './community.js';
 import { recentCard, lifetimeCard, lastMatchCard } from './cards.js';
 import { dayKey, previousDay, normalizeMatch, matchesForDay, observe, tag, summary, nicknameFrom, escapeHtml as h } from './domain.js';
@@ -11,10 +12,11 @@ export const HELP = `🎮 Barni · FACEIT CS2
 /stats — сьогодні / останні 20 / за весь час
 /last — останній матч
 /party текст — зібрати п’ятірку (наприклад, на 19:00)
+/teams @гравець1 … @гравець10 — баланс 5v5 за Elo
 /compare nickname — порівняти (або відповідь гравцю)
 /tag 5 текст — тег на 5 хв (відповідь гравцю або собі)
 /top — рейтинг чату за Elo
-/top day або /top week — інформація про доступність приросту Elo
+/top day або /top week — рейтинг приросту Elo
 /summary — підсумок сьогодні
 /summary yesterday — підсумок учора
 /records — поточний рівень і серія перемог
@@ -24,7 +26,8 @@ export const HELP = `🎮 Barni · FACEIT CS2
 /status — свіжість даних і стан тегів
 
 Матчі рахуємо за завершенням. Ігровий день — від 07:00 до 07:00 за часом чату.
-Тег: тільки поточне Elo. Історія матчів локально не зберігається.
+Тег: поточне Elo / MAX від початку трекінгу. ~ — приріст за неповний день.
+Зберігаємо лише Elo та денні значення; матчі не записуємо.
 Прив’язка за ніком не підтверджує володіння FACEIT-акаунтом.`;
 
 export class Bot {
@@ -65,9 +68,14 @@ export class Bot {
     const run = (async () => {
       const now = Date.now();
       const profile = await this.api.faceit(`/players/${id}`);
+      const observedAt=Date.now();
+      if(!Number.isFinite(profile.games?.cs2?.faceit_elo))throw new Error('Профіль не має рейтингу CS2.');
+      p.elo=profile.games.cs2.faceit_elo;
+      p.observedAt=observedAt;
+      trackElo(p,observedAt,this.zone);this.store.save();
       // Today and yesterday with timezone padding; filter by actual finish time later.
       const history = await this.api.history(id, Math.floor(now / 1000) - 3 * 86400, Math.floor(now / 1000));
-      observe(p, profile, history.map(m => normalizeMatch(m, id)), now, this.zone);
+      observe(p, profile, history.map(m => normalizeMatch(m, id)), observedAt, this.zone);
       return p;
     })();
     this.inflight.set(id, run);
@@ -152,22 +160,19 @@ export class Bot {
     this.store.save(); return result;
   }
   async leaderboard(chat, mode = 'elo', day = dayKey(Date.now(), this.zone), dailySummary = false) {
-    if (!dailySummary && mode !== 'elo') {
-      return this.send(chat.id, 'FACEIT Data API не надає гарантованого приросту Elo за матч. Без локальної історії рейтингу топ приросту недоступний. /top — поточний рейтинг.');
-    }
     const members = await this.members(chat);
     for (const { p } of members) await this.refresh(p.id);
-    const rows = members.map(({ p }) => ({ p, matches: matchesForDay(p, day, this.zone) }))
-      .filter(r => !dailySummary || r.matches.length).sort((a, b) => b.p.elo - a.p.elo);
-    const heading = dailySummary ? `📋 Підсумок · ${day}` : `🏆 Топ чату · ${mode === 'elo' ? 'Elo' : mode === 'week' ? 'останні 7 календарних днів' : 'сьогодні'}`;
+    const rows = members.map(({ p }) => ({ p, change:mode==='week'?eloWeek(p,day):eloDay(p,day), matches: matchesForDay(p, day, this.zone) }))
+      .filter(r => !dailySummary || r.matches.length).sort((a,b)=>!dailySummary&&mode!=='elo'?(b.change?.value??-Infinity)-(a.change?.value??-Infinity)||b.p.elo-a.p.elo:b.p.elo-a.p.elo);
+    const heading = dailySummary ? `📋 Підсумок · ${day}` : `🏆 Топ чату · ${mode === 'elo' ? 'Elo' : mode === 'week' ? 'останні 7 ігрових днів' : 'сьогодні'}`;
     const pages=leaderboardPages(rows);
     for (const [index,page] of pages.entries()) {
-      const lines=page.rows.map(({p,matches},i)=>{
+      const lines=page.rows.map(({p,matches,change},i)=>{
         const s=summary(matches), known=s.wins+s.losses;
-        return `${page.offset+i+1}. <b>${h(p.nickname)}</b> · ${p.elo} Elo${dailySummary?` · ${matches.length}g ${s.wins}W/${s.losses}L · WR ${known?Math.round(100*s.wins/known)+'%':'—'}`:''}`;
+        return `${page.offset+i+1}. <b>${h(p.nickname)}</b> · ${p.elo} Elo · MAX ${peakElo(p)??'—'} · Δ ${eloLabel(change)}${dailySummary?` · ${matches.length}g ${s.wins}W/${s.losses}L · WR ${known?Math.round(100*s.wins/known)+'%':'—'}`:''}`;
       });
       const caption=`<b>${h(heading)}</b>${pages.length>1?` · ${index+1}/${pages.length}`:''}`;
-      await this.sendImage(chat.id,dailySummary?'summary':'top',{...page,day,page:index+1,pages:pages.length},{caption,fallback:caption+'\n'+(lines.join('\n')||'Поки немає результатів.')});
+      await this.sendImage(chat.id,dailySummary?'summary':'top',{...page,day,mode,page:index+1,pages:pages.length},{caption,fallback:caption+'\n'+(lines.join('\n')||'Поки немає результатів.')+'\n\nMAX від початку трекінгу · ~ неповний період'});
     }
   }
   async admin(chat, uid) {
@@ -189,7 +194,7 @@ export class Bot {
     for (const uid of [...group.members]) {
       if (group.customTags?.[uid] || !this.s.users[uid]) continue;
       const p = this.player(uid);
-      if (!p.matches || !p.observedAt || Date.now() - p.observedAt > 180000) continue;
+      if (!Number.isFinite(p.elo) || !p.observedAt || Date.now() - p.observedAt > 180000) continue;
       const text = tag(p);
       const saved = group.tagState[uid] ??= {};
       if (saved.value === text || (saved.retryAt ?? 0) > Date.now()) continue;
@@ -237,6 +242,7 @@ export class Bot {
       const match = /^\/(\w+)(?:@(\w+))?(?:\s+([\s\S]+))?\s*$/.exec(message.text ?? '');
       if (!match || (match[2] && match[2].toLowerCase() !== this.username?.toLowerCase())) return;
       const command = match[1].toLowerCase(), arg = match[3]?.trim();
+      if (command === 'teams') return await this.community.teams(message);
       if (command === 'form') return await this.community.form(message,user);
       if (command === 'taglist') return await this.community.taglist(chat);
       if (command === 'party') return await this.community.party(chat, user, arg);

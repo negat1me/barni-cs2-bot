@@ -43,7 +43,9 @@ export function observe(p, profile, matches, now) {
   return p;
 }
 export function tag(p) {
-  return `${p.elo} ELO`.slice(0,16);
+  const peak=Number.isFinite(p.eloTracking?.peak)?p.eloTracking.peak:p.elo;
+  const full=`${p.elo} ELO | ↑${peak}`;
+  return [full,full.replaceAll(' ',''),`${p.elo}|↑${peak}`,`${p.elo} ELO`].find(value=>value.length<=16)??String(p.elo).slice(0,16);
 }
 export function summary(matches) {
   const wins = matches.filter(m => m.win === true).length;

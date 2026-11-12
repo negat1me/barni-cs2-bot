@@ -2,6 +2,8 @@ import {loadSamples, formCard, stackMaps, partyClock, nextPartyTime, partyAction
 import { randomBytes } from 'node:crypto';
 import { tag, nicknameFrom, escapeHtml as h } from './domain.js';
 import { compareCard } from './cards.js';
+import {teamMentions,balanceTeams} from './teams.js';
+import {trackElo} from './elo-tracking.js';
 
 const mention = user => `<a href="tg://user?id=${user.id}">${h(user.first_name || user.name || 'Гравець')}</a>`;
 const present = member => !['left', 'kicked'].includes(member.status) && !(member.status === 'restricted' && member.is_member === false);
@@ -14,7 +16,13 @@ export class Community {
   faceitProfile(profile) {
     const game = profile.games?.cs2;
     if (!game || !Number.isFinite(game.faceit_elo)) throw new Error('Профіль не має CS2.');
-    return {id: profile.player_id, nickname: profile.nickname, elo: game.faceit_elo, level: game.skill_level, avatar:profile.avatar, region:game.region, country:profile.country, observedAt:Date.now()};
+    const fresh={id: profile.player_id, nickname: profile.nickname, elo: game.faceit_elo, level: game.skill_level, avatar:profile.avatar, region:game.region, country:profile.country, observedAt:Date.now()};
+    const linked=this.bot.s.players[fresh.id];
+    if(linked) {
+      fresh.eloTracking=linked.eloTracking;trackElo(fresh,fresh.observedAt,this.bot.zone);
+      linked.eloTracking=fresh.eloTracking;this.bot.store.save();
+    }
+    return fresh;
   }
   async compare(message, user, arg) {
     const a = await this.profile(user.id);
@@ -36,6 +44,33 @@ export class Community {
       caption:`<b>Compare</b> · ${h(a.nickname)} 🆚 ${h(b.nickname)}`,
       fallback:compareCard(a,b,samples[0],samples[1])
     });
+  }
+  async teams(message) {
+    const group=this.bot.group(message.chat),mentions=teamMentions(message);
+    const known=mentions.some(m=>m.username)?[...group.members,...(group.party?.participants??[]).map(p=>p.id),...(group.party?.reserves??[]).map(p=>p.id)]:[];
+    const candidates=new Set([...mentions.filter(m=>m.id).map(m=>m.id),...known].map(String));
+    const members=new Map(),handles=new Map();
+    for(const id of candidates) {
+      let member;
+      try {member=await this.bot.api.tg('getChatMember',{chat_id:message.chat.id,user_id:Number(id)});}
+      catch(error) {if([400,404].includes(error.status))continue;throw error;}
+      if(!present(member)||!member.user||member.user.is_bot)continue;
+      members.set(id,member.user);
+      if(member.user.username)handles.set(member.user.username.toLowerCase(),id);
+      if(mentions.every(m=>m.id?members.has(m.id):handles.has(m.username)))break;
+    }
+    const ids=mentions.map(m=>m.id??handles.get(m.username));
+    const missing=mentions.filter((m,i)=>!ids[i]||!members.has(ids[i]));
+    if(missing.length)throw new Error(`Не знайшов у цьому чаті: ${missing.map(m=>m.label).join(', ')}. Нехай виконають /link FACEIT_нік або /stats у групі.`);
+    if(new Set(ids).size!==10)throw new Error('Обрано одного гравця кілька разів. Потрібні 10 різних учасників.');
+    const unlinked=ids.filter(id=>!this.bot.s.users[id]);
+    if(unlinked.length)throw new Error(`Спочатку прив’яжіть FACEIT через /link: ${unlinked.map(id=>members.get(id).first_name??'Гравець').join(', ')}.`);
+    const players=[];
+    for(const uid of ids)players.push({...await this.profile(uid),telegramId:uid});
+    const teams=balanceTeams(players);
+    const list=(name,players,average)=>`<b>${name} · AVG ${average.toFixed(1)} ELO</b>\n`+players.map(p=>`<a href="tg://user?id=${p.telegramId}">${h(p.nickname)}</a> · ${p.elo}`).join('\n');
+    const caption=list('TEAM A',teams.a,teams.avgA)+'\n\n'+list('TEAM B',teams.b,teams.avgB)+`\n\nΔ AVG ELO: <b>${teams.difference.toFixed(1)}</b>`;
+    return this.bot.sendImage(message.chat.id,'teams',teams,{caption,fallback:caption});
   }
   async samples(id) {
     const entry=this.sampleCache.get(id);

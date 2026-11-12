@@ -1,3 +1,4 @@
+import {peakElo,latestEloDay,eloLabel} from './elo-tracking.js';
 import {escapeHtml as h, summary} from './domain.js';
 export const numeric = value => value == null || String(value).trim() === '' || !Number.isFinite(Number(value)) ? null : Number(value);
 export const averageStat = (matches, key) => {
@@ -24,7 +25,7 @@ export async function loadSamples(api, id) {
 }
 export function formCard(p, matches) {
   const recent=matches.slice(0,10), previous=matches.slice(10,20);
-  const lines=[`<b>📈 ${h(p.nickname)} · Форма</b>`, `Останні <b>${recent.length}</b> / попередні <b>${previous.length}</b>`, ''];
+  const lines=[`<b>📈 ${h(p.nickname)} · Форма</b>`, `ELO ${p.elo} · MAX ${peakElo(p)??'—'} · Δ день ${eloLabel(latestEloDay(p))}`, `Останні <b>${recent.length}</b> / попередні <b>${previous.length}</b>`, ''];
   if (!recent.length) return lines.concat('Немає завершених матчів.').join('\n');
   const kd = ms => summary(ms).kd==='∞' ? Infinity : numeric(summary(ms).kd);
   const metrics=[['ADR',averageStat(recent,'ADR'),averageStat(previous,'ADR'),1,''],['K/D',kd(recent),kd(previous),2,''],['AVG K',averageStat(recent,'Kills'),averageStat(previous,'Kills'),1,''],['WR',rate(recent),rate(previous),0,'%']];

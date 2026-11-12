@@ -25,7 +25,7 @@ test('07:00 cutoff follows the local clock across both DST transitions', () => {
     ['2026-10-25T05:00:00Z','2026-10-25']
   ]) assert.equal(dayKey(Date.parse(instant),zone),expected,instant);
 });
-test('stats assign matches by finish time at the 07:00 boundary; tags show only Elo', () => {
+test('stats assign matches by finish time at the 07:00 boundary; tags show current and tracked maximum Elo', () => {
   const m = normalizeMatch({ match_id: 'one', started_at: Date.parse('2026-11-11T04:50:00Z') / 1000, finished_at: Date.parse('2026-11-11T05:05:00Z') / 1000,
     teams: { faction1: { players: [{ player_id: 'p' }] } }, results: { winner: 'faction1' } }, 'p');
   assert.equal(m.win, true);
@@ -33,7 +33,7 @@ test('stats assign matches by finish time at the 07:00 boundary; tags show only 
   const p = {elo:2100,matches:{one:m,two:before}};
   assert.deepEqual(matchesForDay(p, '2026-11-11', zone).map(m=>m.id), ['one']);
   assert.deepEqual(matchesForDay(p, '2026-11-10', zone).map(m=>m.id), ['two']);
-  assert.equal(tag(p, '2026-11-11', zone), '2100 ELO');
+  assert.equal(tag(p, '2026-11-11', zone), '2100 ELO | ↑2100');
   assert.equal(dayKey(Date.parse('2026-11-12T00:20:00Z'),zone), '2026-11-11');
   assert.equal(previousDay(dayKey(Date.parse('2026-11-12T00:20:00Z'),zone)), '2026-11-10');
 });
@@ -41,12 +41,12 @@ test('fresh FACEIT response replaces games and removes historical rating fields'
   const p = {days: {old: {start: 2000}}, peak: 3000}, now = Date.parse('2026-11-11T12:00:00Z');
   const m = {id: 'one', finished: now, win: true};
   observe(p, profile(2100), [m, m], now, zone);
-  assert.equal(tag(p, '2026-11-11', zone), '2100 ELO');
+  assert.equal(tag(p, '2026-11-11', zone), '2100 ELO | ↑2100');
   observe(p, profile(2127), [], now + 60000, zone);
   assert.deepEqual(p.matches, {});
   assert.equal(p.days, undefined);
   assert.equal(p.peak, undefined);
-  assert.equal(tag(p, '2026-11-11', zone), '2127 ELO');
+  assert.equal(tag(p, '2026-11-11', zone), '2127 ELO | ↑2127');
 });
 test('summary uses ratio of totals, handles unknown winner and zero deaths', () => {
   const s = summary([{win: true, stats: { Kills: '30', Deaths: '10' }}, {win: false, stats: {Kills: '10', Deaths: '20'}}, {win: null}]);

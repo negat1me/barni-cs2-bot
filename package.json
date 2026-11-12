@@ -4,12 +4,13 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22.13"
+    "node": ">=22.13",
+    "npm": ">=10"
   },
   "scripts": {
-    "start": "node --env-file=.env src/index.js",
+    "start": "node src/start.js",
     "test": "node --test",
-    "check": "node --check src/index.js && node --check src/bot.js && node --check src/domain.js && node --check src/api.js && node --check src/cards.js && node --check src/community.js && node --check src/store.js && node --check src/insights.js && node --check src/stats-image.js && node --check src/api-error.js && node --check src/command-images.js"
+    "check": "node --check src/index.js && node --check src/bot.js && node --check src/domain.js && node --check src/api.js && node --check src/cards.js && node --check src/community.js && node --check src/store.js && node --check src/insights.js && node --check src/stats-image.js && node --check src/api-error.js && node --check src/command-images.js && node --check src/start.js && node --check src/runtime.js && node --check src/teams.js && node --check src/elo-tracking.js"
   },
   "dependencies": {
     "@resvg/resvg-js": "2.6.2",
