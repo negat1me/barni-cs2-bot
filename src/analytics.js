@@ -37,7 +37,7 @@ export function normalizeAnalyserMatch(raw,id) {
     date:typeof raw.date==='string'?raw.date:null,map:raw.map??raw.i1,
     win:String(raw.w??raw.i10)==='1'?true:String(raw.w??raw.i10)==='0'?false:null,
     started:stat('created_at'),stats:{Kills:kills,Deaths:deaths,Assists:assists,ADR:stat('adr','c10'),'Headshots %':stat('c4'),'K/R Ratio':stat('krr','c3'),
-      'Quadro Kills':stat('i15'),'Penta Kills':stat('i16'),'Triple Kills':stat('i14')},
+      'Quadro Kills':stat('i15'),'Penta Kills':stat('i16'),'Triple Kills':stat('i14'),'HLTV Rating':stat('hltv','_hltv')},
     score:raw.s??raw.i18,url:`https://www.faceit.com/en/cs2/room/${encodeURIComponent(matchId)}`,source:'analyser'};
 }
 export function mapStats(matches) {
@@ -62,10 +62,13 @@ export function bestMatches(matches) {
 }
 export function buildAnalytics(id,dataset,rawHistory,window,zone='Europe/Kyiv') {
   const history=rawHistory.map(m=>normalizeMatch(m,id)).filter(m=>m.finished).sort((a,b)=>b.finished-a.finished);
-  const indexed=new Map(history.map(m=>[m.id,m])),rows=[],seen=new Set(),deltaGroups=new Map();
+  const indexed=new Map(history.map(m=>[m.id,m])),rows=[],seen=new Set(),deltaGroups=new Map(),matchRatings=new Map();
   for(const m of dataset?.matches??[]) {
     const key=`${m.id}:${m.round}`;if(seen.has(key))continue;seen.add(key);
     const deltas=deltaGroups.get(m.id)??[];deltas.push(m.eloDelta);deltaGroups.set(m.id,deltas);
+    // Official detail cards currently use the first map of a series.
+    const rating=numeric(m.stats?.['HLTV Rating']);
+    if(m.round==='1'&&rating!=null&&rating>=0)matchRatings.set(m.id,rating);
     const official=indexed.get(m.id);if(!official)continue;
     rows.push({...m,...official,map:m.map,stats:m.stats,elo:m.elo,eloDelta:m.eloDelta,round:m.round,win:official.win??m.win,score:official.score||m.score,source:'analyser'});
   }
@@ -89,7 +92,7 @@ export function buildAnalytics(id,dataset,rawHistory,window,zone='Europe/Kyiv') 
   const covered=new Set(selected.map(m=>m.id)).size;
   const complete=!!dataset?.available&&covered===games.length&&!dataset.truncated&&!dataset.stale;
   const best=bestMatches(selected);
-  return {matches:selected,history,matchDeltas,exactDays,missingDays,maps:mapStats(selected),best,graph:{points,from:window.from,to:window.to,expected:games.length,covered:points.length,complete:complete&&points.length===games.length},
+  return {matches:selected,history,matchDeltas,matchRatings,exactDays,missingDays,maps:mapStats(selected),best,graph:{points,from:window.from,to:window.to,expected:games.length,covered:points.length,complete:complete&&points.length===games.length},
     window,expected:games.length,covered,mapCovered:new Set(selected.filter(m=>m.map).map(m=>m.id)).size,bestComplete:complete&&best.every(record=>record.covered===games.length),complete,stale:!!dataset?.stale,period:'30 ігрових днів',analyserUsed:!!dataset?.available,available:!!dataset?.available};
 }
 export function applyExactDays(p,data) {

@@ -30,14 +30,17 @@ export function statsModel({player:p, period='today', matches=[], lifetime={}, r
   ];
   const secondary=[['МАТЧІ',n(count)], ['W / L',`${n(wins)} / ${n(losses)}`],
     ['WIN RATE',all ? n(lifetime['Win Rate %'],0,'%') : known ? n(100*wins/known,0,'%') : '—'],
-    all ? ['WIN STREAK',n(lifetime['Current Win Streak'])] : ['K/R',n(averageStat(matches,'K/R Ratio'),2)]];
+    all ? ['WIN STREAK',n(lifetime['Current Win Streak'])] : ['K/R',n(averageStat(matches,'K/R Ratio'),2)],
+    ['HLTV',n(all?p.analyser?.avgHltv:averageStat(matches,'HLTV Rating'),2)]];
+  const rated=matches.filter(m=>numeric(m.stats?.['HLTV Rating'])!=null).length;
+  const hltvNote=all?numeric(p.analyser?.avgHltv)==null?'HLTV недоступний':`HLTV: Analyser · ${n(p.analyser.ratingMatches)} матчів`:`HLTV ${rated}/${matches.length}`;
   const incomplete=!all && matches.some(m=>['Kills','Deaths','Assists','ADR','Headshots %','K/R Ratio'].some(k=>numeric(m.stats?.[k])==null) || m.win==null);
   const country=/^[a-z]{2}$/i.test(p.country ?? '') ? p.country.toUpperCase() : '';
   const countryName=country ? new Intl.DisplayNames(['uk'],{type:'region'}).of(country) : 'Країна';
   return {player:p, period, label:label ?? (all?'За весь час':period==='recent'?'Останні 20 матчів':'Сьогодні'), primary, secondary,
     country,countryName, countryRank:rank(ranks.country), regionRank:rank(ranks.region),
     peak:peakElo(p),change:eloDay(p,dayKey(p.observedAt??Date.now(),zone)),graph,
-    empty:!all && !matches.length, incomplete, form:all?[]:matches.slice(0,5).map(m=>m.win===true?'W':m.win===false?'L':'—')};
+    empty:!all && !matches.length, incomplete,hltvNote, form:all?[]:matches.slice(0,5).map(m=>m.win===true?'W':m.win===false?'L':'—')};
 }
 
 // FACEIT-hosted images only. No auth headers, cookies, redirects or disk cache.
@@ -64,9 +67,9 @@ export function statsSvg(model,avatar=null,zone='Europe/Kyiv') {
   let offset=44;
   const metrics=model.primary.map(([label,value],i)=>{const x=offset;offset+=columns[i];return text(x+24,413,label,18,colors.muted,700)+text(x+24,464,value,model.period!=='all' && i===0?43:39,colors.text,700);}).join('');
   const secondary=model.secondary.map(([label,value],i)=>{
-    const x=68+258*i;
-    const metric=label==='W / L' ? `<text x="${x}" y="582" font-size="31" font-weight="700"><tspan fill="${colors.green}">${xml(value.split(' / ')[0])}</tspan><tspan fill="${colors.muted}"> / </tspan><tspan fill="${colors.red}">${xml(value.split(' / ')[1])}</tspan></text>` : text(x,582,value,31,colors.text,700);
-    return text(x,539,label,17,colors.muted,700)+metric;
+    const x=68+1032/model.secondary.length*i;
+    const metric=label==='W / L' ? `<text x="${x}" y="582" font-size="27" font-weight="700"><tspan fill="${colors.green}">${xml(value.split(' / ')[0])}</tspan><tspan fill="${colors.muted}"> / </tspan><tspan fill="${colors.red}">${xml(value.split(' / ')[1])}</tspan></text>` : text(x,582,value,31,colors.text,700);
+    return text(x,539,label,16,colors.muted,700)+metric;
   }).join('');
   const form=model.form.map((value,i)=>box(209+i*54,634,44,36,value==='W'?'#1f3c34':value==='L'?'#422c36':'#2a3040',8)+text(231+i*54,659,value,19,value==='W'?colors.green:value==='L'?colors.red:colors.muted,700,'text-anchor="middle"')).join('');
   const date=Number.isFinite(p.observedAt)?new Date(p.observedAt).toLocaleString('uk-UA',{timeZone:zone,day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'';
@@ -89,7 +92,7 @@ export function statsSvg(model,avatar=null,zone='Europe/Kyiv') {
   ${text(44,351,model.label,26,colors.text,700)}${text(1076,350,model.period==='all'?'LIFETIME':'PERFORMANCE',16,colors.orange,700,'text-anchor="end"')}
   ${box(44,380,1032,108)}${metrics}${box(44,510,1032,94)}${secondary}
   ${model.form.length?text(44,659,'ОСТАННІ',17,colors.muted,700)+form:text(44,660,model.empty?'Матчів не знайдено':'CS2 · FACEIT',21,colors.muted)}
-  ${text(44,703,note,14,colors.muted)}${text(44,729,eloNote(p,zone),13,colors.muted)}${text(1076,714,date,16,colors.muted,400,'text-anchor="end"')}
+  ${text(44,703,`${note} · ${model.hltvNote}`,14,colors.muted)}${text(44,729,eloNote(p,zone),13,colors.muted)}${text(1076,714,date,16,colors.muted,400,'text-anchor="end"')}
   ${model.graph?eloChartSvg(model.graph,zone):''}
   </g></svg>`;
 }

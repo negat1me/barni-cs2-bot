@@ -40,9 +40,10 @@ export class Store {
       })),
       chats: Object.fromEntries(Object.entries(this.state.chats).map(([id, c]) => [id, {
         members: c.members, tags: c.tags,
-        party: c.party ? {id: c.party.id, owner: c.party.owner, text: c.party.text, startsAt: c.party.startsAt, remindAt: c.party.remindAt, remindedAt: c.party.remindedAt, reminderRetryAt: c.party.reminderRetryAt, reminderMissed: c.party.reminderMissed,
+        party: c.party ? {id: c.party.id,day:c.party.day,pinnedMessageId:c.party.pinnedMessageId,pinRetryAt:c.party.pinRetryAt,pinError:c.party.pinError, owner: c.party.owner, text: c.party.text, startsAt: c.party.startsAt, remindAt: c.party.remindAt, remindedAt: c.party.remindedAt, reminderRetryAt: c.party.reminderRetryAt, reminderMissed: c.party.reminderMissed,
           reserves: (c.party.reserves??[]).map(p=>({id:p.id,name:p.name})), messageId: c.party.messageId,
           participants: c.party.participants.map(p => ({id: p.id, name: p.name}))} : undefined,
+        partyCleanup:(c.partyCleanup??[]).filter(job=>Number.isInteger(job.messageId)&&job.messageId>0).map(job=>({messageId:job.messageId,reason:job.reason,edited:!!job.edited,unpinned:!!job.unpinned,retryAt:job.retryAt})),
         customTags: Object.fromEntries(Object.entries(c.customTags ?? {}).map(([uid, t]) => [uid, {
           text: t.text, by: t.by, expiresAt: t.expiresAt, restoreText: t.restoreText, retryAt: t.retryAt
         }])),

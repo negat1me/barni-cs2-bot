@@ -30,6 +30,8 @@ export const HELP = `🎮 Barni · FACEIT CS2
 /status — свіжість даних і стан тегів
 
 Матчі рахуємо за завершенням. Ігровий день — від 07:00 до 07:00 за часом чату.
+Party закріплюється при створенні й закривається наприкінці ігрового дня. Потрібне право закріплювати повідомлення.
+HLTV — рейтинг із Faceit Analyser; AVG рахуємо за доступними матчами.
 Тег: поточне Elo / MAX. Analyser додає історичний MAX та Δ за матчами; без нього — власний трекінг. ~ — неповний період.
 Зберігаємо лише Elo та денні значення; матчі не записуємо.
 Прив’язка за ніком не підтверджує володіння FACEIT-акаунтом.`;
@@ -67,10 +69,10 @@ export class Bot {
     if (!id || !this.s.players[id]) throw new Error('Спочатку прив’яжи FACEIT: /link nickname');
     return this.s.players[id];
   }
-  async enrichPeak(p) {
+  async enrichPeak(p,options) {
     if(!this.api.analyser?.enabled)return p;
     const known=this.s.players[p.id];
-    const record=await this.api.analyser.stats(p.id,p.analyser??known?.analyser);
+    const record=await this.api.analyser.stats(p.id,p.analyser??known?.analyser,options);
     const previous=known?.analyser;
     if(record){p.analyser=record;if(known&&previous!==record){known.analyser=record;this.store.save();}}
     return p;
@@ -102,8 +104,11 @@ export class Bot {
     while(this.analyticsCache.size>100)this.analyticsCache.delete(this.analyticsCache.keys().next().value);
     return entry.promise;
   }
-  applyMatchElo(matches,data) {
-    for(const match of matches)if(data?.matchDeltas.has(match.id)){match.eloDelta=data.matchDeltas.get(match.id);match.analyserUsed=true;}
+  applyMatchData(matches,data) {
+    for(const match of matches) {
+      if(data?.matchDeltas?.has(match.id)){match.eloDelta=data.matchDeltas.get(match.id);match.analyserUsed=true;}
+      if(data?.matchRatings?.has(match.id)){match.stats??={};match.stats['HLTV Rating']=data.matchRatings.get(match.id);match.analyserUsed=true;}
+    }
   }
   async refresh(id) {
     if (this.inflight.has(id)) return this.inflight.get(id);
@@ -159,12 +164,13 @@ export class Bot {
     let data, fallback;
     if (period === 'all') {
       const stats = await this.api.faceit(`/players/${p.id}/stats/cs2`);
+      await this.enrichPeak(p,{rating:true});
       data = {player:p, period, lifetime:stats.lifetime ?? {}, label};
       fallback = lifetimeCard(p, data.lifetime, this.zone);
     } else {
       const matches = period === 'recent' ? await this.recent(p) : matchesForDay(p, dayKey(Date.now(),this.zone), this.zone);
       await this.details(p, matches);
-      this.applyMatchElo(matches,analytics);
+      this.applyMatchData(matches,analytics);
       data = {player:p, period, matches, label};
       fallback = recentCard(p, matches, label, this.zone);
     }
@@ -257,6 +263,7 @@ export class Bot {
     }
   }
   async tick() {
+    await this.community.expireParties();
     await this.community.expireTags();
     this.clearMatches();
     for (const id of new Set(Object.values(this.s.users).map(u => u.playerId))) {
@@ -354,7 +361,7 @@ export class Bot {
         const m = (await this.recent(p))[0];
         if (!m) return this.send(chat.id, 'Завершених матчів не знайдено.');
         await this.details(p, [m]);
-        this.applyMatchElo([m],await this.analytics(p));
+        this.applyMatchData([m],await this.analytics(p));
         return await this.sendImage(chat.id, 'last', {player:p,match:m}, {caption:`<b>${h(p.nickname)}</b> · Останній матч · ${h(String(m.map??'—').replace(/^de_/,''))}`, fallback:lastMatchCard(p,m,this.zone), reply_markup: { inline_keyboard: [[{ text: 'Відкрити матч ↗', url: m.url }]] } });
       }
       const recent = await this.recent(p), s = summary(recent);

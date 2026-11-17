@@ -1,6 +1,6 @@
 import {loadSamples, formCard, stackMaps, partyClock, nextPartyTime, partyAction} from './insights.js';
 import { randomBytes } from 'node:crypto';
-import { tag, nicknameFrom, escapeHtml as h } from './domain.js';
+import { tag, nicknameFrom, dayKey, escapeHtml as h } from './domain.js';
 import { compareCard } from './cards.js';
 import {teamMentions,balanceTeams} from './teams.js';
 import {trackElo} from './elo-tracking.js';
@@ -41,7 +41,7 @@ export class Community {
     for (const p of [a, b]) {
       const matches = await this.bot.recent(p);
       await this.bot.details(p, matches);
-      const analytics=await this.bot.analytics(p);this.bot.applyMatchElo(matches,analytics);
+      const analytics=await this.bot.analytics(p);this.bot.applyMatchData(matches,analytics);
       samples.push(matches);
     }
     return this.bot.sendImage(message.chat.id,'compare',{a,b,aMatches:samples[0],bMatches:samples[1]}, {
@@ -87,8 +87,9 @@ export class Community {
   async form(message,user) {
     const target=message.reply_to_message?.from ?? user;
     const p=await this.profile(target.id);
-    await this.bot.analytics(p);
+    const analytics=await this.bot.analytics(p);
     const matches=await this.samples(p.id);
+    this.bot.applyMatchData(matches,analytics);
     return this.bot.sendImage(message.chat.id,'form',{player:p,matches}, {
       caption:`<b>${h(p.nickname)}</b> · Форма · останні ${Math.min(matches.length,10)} / попередні ${Math.max(0,matches.length-10)}`,
       fallback:formCard(p,matches)
@@ -176,26 +177,94 @@ export class Community {
   }
   async renderParty(chat, party) {
     const text = await this.partyCard(party), reply_markup = this.partyKeyboard(party);
+    const body=()=>({chat_id:chat.id,message_id:party.messageId,text:text+(party.pinError?'\n\n📌 '+party.pinError:''),parse_mode:'HTML',reply_markup});
     if (party.messageId) {
       try {
-        await this.bot.api.tg('editMessageText', {chat_id: chat.id, message_id: party.messageId, text, parse_mode: 'HTML', reply_markup});
-        return;
+        await this.bot.api.tg('editMessageText',body());
       } catch (error) {
-        if (error.message.includes('message is not modified')) return;
-        if (!/message to edit not found|message can't be edited/i.test(error.message)) throw error;
+        if (!error.message.includes('message is not modified')) {
+          if (!/message to edit not found|message can't be edited/i.test(error.message)) throw error;
+          this.queuePartyCleanup(chat.id,party.messageId,'replaced');
+          delete party.messageId;
+          this.bot.store.save();
+        }
       }
     }
-    const result = await this.bot.send(chat.id, text, {reply_markup});
-    party.messageId = result.message_id;
-    this.bot.store.save();
+    if(!party.messageId) {
+      const result=await this.bot.send(chat.id,body().text,{reply_markup});
+      party.messageId=result.message_id;delete party.pinRetryAt;this.bot.store.save();
+    }
+    if(await this.pinParty(chat.id,party)) {
+      // Keep a real pin failure visible in the party itself, without extra chat messages.
+      try {await this.bot.api.tg('editMessageText',body());}catch{}
+    }
+    await this.cleanPartyMessages(chat.id,this.bot.s.chats[chat.id]);
+  }
+  async pinParty(chatId,party,now=Date.now()) {
+    if(!party.messageId||party.pinnedMessageId===party.messageId||now<(party.pinRetryAt??0))return false;
+    const previous=party.pinError;
+    try {
+      await this.bot.api.tg('pinChatMessage',{chat_id:chatId,message_id:party.messageId,disable_notification:true});
+      party.pinnedMessageId=party.messageId;delete party.pinError;delete party.pinRetryAt;
+    } catch(error) {
+      party.pinError=/not enough rights|administrator|CHAT_ADMIN_REQUIRED|can_pin_messages|RIGHT_FORBIDDEN/i.test(error.message)
+        ? 'Для закріплення надай боту право «Закріплювати повідомлення».'
+        : 'Не вдалося закріпити повідомлення. Бот повторить спробу.';
+      party.pinRetryAt=now+300000;
+    }
+    this.bot.store.save();return previous!==party.pinError;
+  }
+  queuePartyCleanup(chatId,messageId,reason) {
+    const group=this.bot.s.chats[chatId];
+    if(!messageId)return;
+    group.partyCleanup??=[];
+    if(!group.partyCleanup.some(job=>job.messageId===messageId))group.partyCleanup.push({messageId,reason,edited:false,unpinned:false,retryAt:0});
+  }
+  async cleanPartyMessages(chatId,group,now=Date.now()) {
+    for(const job of group.partyCleanup??[]) {
+      if(now<(job.retryAt??0))continue;
+      if(!job.edited)try {
+        const text=job.reason==='day'?'👥 Збір закрито: ігровий день завершився о 07:00. Новий — /party':job.reason==='replaced'?'👥 Повідомлення збору оновлено. Актуальний склад — /party':'👥 Збір закрито. Новий — /party';
+        await this.bot.api.tg('editMessageText',{chat_id:chatId,message_id:job.messageId,text,reply_markup:{inline_keyboard:[]}});job.edited=true;
+      }catch(error){if(/message is not modified|message to edit not found|message can't be edited/i.test(error.message))job.edited=true;}
+      if(!job.unpinned)try {
+        // Always name this party message; never unpin another chat message.
+        await this.bot.api.tg('unpinChatMessage',{chat_id:chatId,message_id:job.messageId});job.unpinned=true;
+      }catch(error){if(/message to unpin not found|message is not pinned|message_id_invalid/i.test(error.message))job.unpinned=true;}
+      job.retryAt=now+60000;this.bot.store.save();
+    }
+    const remaining=(group.partyCleanup??[]).filter(job=>!job.edited||!job.unpinned);
+    if(remaining.length!==(group.partyCleanup?.length??0)){group.partyCleanup=remaining;this.bot.store.save();}
+  }
+  async closeParty(chatId,party,reason='manual',now=Date.now()) {
+    const group=this.bot.s.chats[chatId];
+    this.queuePartyCleanup(chatId,party.messageId,reason);
+    if(group.party?.id===party.id)delete group.party;
+    // Cancel joins and reminders before making Telegram requests; cleanup survives a restart.
+    this.bot.store.save();await this.cleanPartyMessages(chatId,group,now);
+  }
+  async expireParties(now=Date.now(),onlyChat) {
+    const day=dayKey(now,this.bot.zone);
+    for(const [id,group] of Object.entries(this.bot.s.chats)) {
+      if(onlyChat&&id!==String(onlyChat)||this.bot.config.chatId&&id!==this.bot.config.chatId)continue;
+      const party=group.party;
+      if(party) {
+        // Older states have no creation day; give them the current gaming day once.
+        if(!party.day){party.day=day;this.bot.store.save();}
+        if(party.day<day)await this.closeParty(id,party,'day',now);
+        else if(!party.messageId||await this.pinParty(id,party,now))await this.renderParty({id},party);
+      }
+      await this.cleanPartyMessages(id,group,now);
+    }
   }
   async party(chat, user, text) {
     const group = this.bot.group(chat);
+    await this.expireParties(Date.now(),chat.id);
     if (text) {
       if (text.length > 200) throw new Error('Текст party — до 200 символів.');
       if (group.party && group.party.owner !== String(user.id)) await this.bot.admin(chat, user.id);
     }
-    group.party ??= {id: randomBytes(8).toString('hex'), owner: String(user.id), participants: [{id: String(user.id), name: (user.first_name || 'Гравець').slice(0, 64)}]};
+    group.party ??= {id: randomBytes(8).toString('hex'),day:dayKey(Date.now(),this.bot.zone), owner: String(user.id), participants: [{id: String(user.id), name: (user.first_name || 'Гравець').slice(0, 64)}]};
     if(text) {
       const party=group.party;
       if(!party.startsAt || partyClock(text)!==partyClock(party.text)) {
@@ -209,6 +278,8 @@ export class Community {
     await this.renderParty(chat, group.party);
   }
   async partyCallback(callback, chat, user) {
+    this.bot.group(chat);
+    await this.expireParties(Date.now(),chat.id);
     const [, id, action] = /^party:([a-f0-9]+):(join|leave|reserve|close)$/.exec(callback.data ?? '') ?? [];
     const party = this.bot.group(chat).party;
     const answer = (text, alert = false) => this.bot.api.tg('answerCallbackQuery', {callback_query_id: callback.id, text, show_alert: alert});
@@ -217,10 +288,8 @@ export class Community {
     if (!present(membership)) return answer('Треба бути учасником групи.', true);
     if (action === 'close') {
       if (party.owner !== String(user.id) && !['administrator','creator'].includes(membership.status)) return answer('Закрити може автор збору або адміністратор.', true);
-      delete this.bot.group(chat).party;
-      this.bot.store.save();
+      await this.closeParty(chat.id,party);
       await answer('Збір закрито');
-      await this.bot.api.tg('editMessageText', {chat_id: chat.id, message_id: party.messageId, text: '👥 Збір закрито. Новий — /party', reply_markup: {inline_keyboard: []}});
       return;
     }
     const problem=partyAction(party,user,action);
@@ -230,6 +299,7 @@ export class Community {
     await this.renderParty(chat, party);
   }
   async remindParties(now=Date.now()) {
+    await this.expireParties(now);
     for(const [id,group] of Object.entries(this.bot.s.chats)) {
       if(this.bot.config.chatId && id!==this.bot.config.chatId)continue;
       const p=group.party;

@@ -55,7 +55,7 @@ test('cache survives restart but secrets and raw match data never persist',()=>{
   const path=join(dir,'state.json'),store=new Store(path);store.state.users[1]={playerId:id};
   store.state.players[id]={id,analyser:{...normalizeAnalyserStats(payload(),id,10000),key:'private-key',matches:[{secret:'raw-game'}]}};
   store.save();const fresh=new Store(path).state.players[id];assert.equal(fresh.analyser.highestElo,3043);
-  const raw=readFileSync(path,'utf8');assert.ok(!raw.includes('private-key'));assert.ok(!raw.includes('raw-game'));
+  const raw=readFileSync(path,'utf8');assert.ok(!raw.includes('private-key'));assert.ok(!raw.includes('raw-game'));assert.ok(!raw.includes('avgHltv'));assert.ok(!raw.includes('ratingMatches'));
  }finally{rmSync(dir,{recursive:true,force:true});}
 });
 test('source credit is visible in captions, text fallback and exported image',async()=>{
@@ -78,4 +78,13 @@ test('provider cache is saved once on linked profile and reused without repeated
 test('missing optional key makes no provider requests',async()=>{
  let calls=0;const analyser=new FaceitAnalyser({fetcher:async()=>{calls++;throw Error();}});
  assert.equal(await analyser.stats(id),null);assert.equal(calls,0);
+});
+
+test('lifetime HLTV refreshes an Elo-only disk cache once and then reuses the RAM aggregate',async()=>{
+ const f=fixture(()=>new Response(JSON.stringify({...payload(),avg_hltv:1.35,m:2884})));
+ const persisted=normalizeAnalyserStats(payload(),id,10000);delete persisted.avgHltv;delete persisted.ratingMatches;
+ await f.analyser.stats(id,persisted);assert.equal(f.calls.length,0);
+ const rating=await f.analyser.stats(id,persisted,{rating:true});assert.equal(rating.avgHltv,1.35);assert.equal(rating.ratingMatches,2884);assert.equal(f.calls.length,1);
+ assert.equal((await f.analyser.stats(id,persisted,{rating:true})).avgHltv,1.35);assert.equal(f.calls.length,1);
+ const missing=normalizeAnalyserStats(payload(),id,10000);assert.equal(missing.avgHltv,null);
 });

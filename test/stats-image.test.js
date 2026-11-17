@@ -34,3 +34,11 @@ test('avatar loads only bounded FACEIT raster images and rejects redirects, huge
  assert.equal(await avatarPng('https://assets.faceit-cdn.net/a',async()=>new Response(image,{headers:{'content-type':'image/png','content-length':'4000000'}})),null);
  assert.equal(await avatarPng('https://assets.faceit-cdn.net/a',async()=>new Response('invalid',{headers:{'content-type':'image/png'}})),null);
 });
+
+test('HLTV averages only available matches and lifetime uses its own aggregate',()=>{
+ const selected=[{stats:{'HLTV Rating':1.74}},{stats:{'HLTV Rating':1.26}},{stats:{}}];
+ const recent=statsModel({player,period:'recent',matches:selected});assert.equal(recent.secondary.find(([label])=>label==='HLTV')[1],'1.50');assert.equal(recent.hltvNote,'HLTV 2/3');
+ const all=statsModel({player:{...player,analyser:{avgHltv:1.21,ratingMatches:2884}},period:'all',matches:selected});assert.equal(all.secondary.find(([label])=>label==='HLTV')[1],'1.21');assert.match(all.hltvNote,/2884/);
+ const empty=statsModel({player,matches:[]});assert.equal(empty.secondary.find(([label])=>label==='HLTV')[1],'—');
+ assert.equal(statsModel({player,matches:[{stats:{'HLTV Rating':0}}]}).secondary.find(([label])=>label==='HLTV')[1],'0.00');
+});

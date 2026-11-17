@@ -102,3 +102,13 @@ test('last match delta remains available for inactive players outside the 30-day
  const data=buildAnalytics(id,{available:true,matches:[source('old',-19)]},[],analyticsWindow(now,zone),zone);
  assert.equal(data.matchDeltas.get('old'),-19);assert.equal(data.graph.points.length,0);assert.equal(data.maps.length,0);assert.equal(data.exactDays['2026-11-12'].value,0);
 });
+
+test('HLTV comes from provider matches, joins by ID and preserves official match statistics',()=>{
+ const sourceMatch=normalizeAnalyserMatch({playerId:id,matchId:'a',hltv:1.74,_hltv:1.7444528,elo_delta:24},id);
+ const data=buildAnalytics(id,{available:true,matches:[sourceMatch]},[raw('a',now-1000)],analyticsWindow(now,zone),zone);
+ const match={id:'a',stats:{Kills:27,Deaths:15,ADR:113.3}};
+ const bot=new Bot({}, {state:{players:{},users:{},chats:{}},save(){}},{zone});bot.applyMatchData([match],data);
+ assert.deepEqual(match.stats,{Kills:27,Deaths:15,ADR:113.3,'HLTV Rating':1.74});assert.equal(match.eloDelta,24);assert.equal(match.analyserUsed,true);
+ assert.equal(normalizeAnalyserMatch({playerId:id,matchId:'b',hltv:0},id).stats['HLTV Rating'],0);
+ assert.equal(normalizeAnalyserMatch({playerId:id,matchId:'b'},id).stats['HLTV Rating'],null);
+});

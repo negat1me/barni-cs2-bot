@@ -26,7 +26,8 @@ export function recentCard(p, matches, label, zone) {
     '', '<b>🎯 AVG / матч</b>',
     kda(s.avg, average(matches, 'Deaths'), average(matches, 'Assists')),
     `K/D <b>${s.kd}</b>`,
-    statLine([['ADR', average(matches, 'ADR')], ['HS', average(matches, 'Headshots %'), '%']])];
+    statLine([['ADR', average(matches, 'ADR')], ['HS', average(matches, 'Headshots %'), '%']]),
+    `HLTV <b>${average(matches,'HLTV Rating',2)??'—'}</b> · ${matches.filter(m=>statNumber(m,'HLTV Rating')!=null).length}/${matches.length} матчів`];
   if (known < matches.length) lines.push(`<i>Результат відомий: ${known}/${matches.length}</i>`);
   if (matches.some(m => !m.stats || ['Kills', 'Deaths', 'Assists'].some(k => statNumber(m,k) == null))) lines.push('<i>Неповні дані · AVG за доступними матчами</i>');
   lines.push('', `${s.form}  <i>← новіші</i>`);
@@ -43,6 +44,7 @@ export function lifetimeCard(p, stats, zone) {
     `K/D <b>${metric(stats['Average K/D Ratio'])}</b>  ·  HS <b>${metric(stats['Average Headshots %'], '%')}</b>`];
   const kr = statLine([['K/R', stats['Average K/R Ratio']]]);
   if (kr) lines.push(kr);
+  lines.push(`HLTV <b>${number(p.analyser?.avgHltv)==null?'—':Number(p.analyser.avgHltv).toFixed(2)}</b>${number(p.analyser?.avgHltv)!=null?` · Analyser · ${p.analyser.ratingMatches??'—'} матчів`:''}`);
   const streak = statLine([['Win streak', stats['Current Win Streak']], ['Best', stats['Longest Win Streak']]]);
   if (streak) lines.push('', `🔥 ${streak}`);
   return lines.join('\n') + footer(p, zone);
@@ -63,6 +65,7 @@ export function lastMatchCard(p, m, zone) {
   lines.push('', '<b>🎯 Performance</b>', kda(s.Kills, s.Deaths, s.Assists), `K/D <b>${summary([m]).kd}</b>`);
   const aim = statLine([['ADR', s.ADR], ['HS', s['Headshots %'], '%'], ['K/R', s['K/R Ratio']]]);
   if (aim) lines.push(aim);
+  lines.push(`HLTV <b>${number(s['HLTV Rating'])==null?'—':Number(s['HLTV Rating']).toFixed(2)}</b>`);
   const multi = statLine([['2K', s['Double Kills']], ['3K', s['Triple Kills']], ['4K', s['Quadro Kills']], ['ACE', s['Penta Kills']]].filter(([,value]) => number(value) > 0));
   if (multi) lines.push('', `💥 ${multi}`);
   if (!m.stats || ['Kills', 'Deaths', 'Assists'].some(key => number(s[key]) == null)) lines.push('<i>Частина даних ще недоступна</i>');
@@ -83,7 +86,9 @@ export function compareCard(a, b, aMatches, bMatches) {
     line('WR', wr(first), wr(second)), line('K/D', first.kd, second.kd),
     line('AVG K', integer(first.avg), integer(second.avg)),
     line('ADR', metric(average(aMatches, 'ADR')), metric(average(bMatches, 'ADR'))),
+    line('HLTV',metric(average(aMatches,'HLTV Rating',2)),metric(average(bMatches,'HLTV Rating',2))),
     line('HS', metric(average(aMatches, 'Headshots %'), '%'), metric(average(bMatches, 'Headshots %'), '%')),
+    `HLTV: ${aMatches.filter(m=>statNumber(m,'HLTV Rating')!=null).length}/${aMatches.length} / ${bMatches.filter(m=>statNumber(m,'HLTV Rating')!=null).length}/${bMatches.length} матчів`,
     '', `${h(a.nickname)}  ${first.form || '—'}`, `${h(b.nickname)}  ${second.form || '—'}`,
     ...(aMatches.concat(bMatches).some(m => !m.stats || ['Kills','Deaths','ADR','Headshots %'].some(key => statNumber(m, key) == null))
       ? ['<i>Частина показників недоступна · AVG за наявними даними</i>'] : [])

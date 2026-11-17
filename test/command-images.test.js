@@ -48,3 +48,11 @@ test('all five commands and empty selections render square PNGs within Telegram 
  }
  await assert.rejects(renderCommandImage('unknown',{}));
 });
+
+test('HLTV appears in last, compare and form models with missing values kept unknown',()=>{
+ const rated=(value,win=true)=>({...sample(win),stats:{...sample(win).stats,'HLTV Rating':value}});
+ const last=lastModel({player:a,match:{...match,stats:{...match.stats,'HLTV Rating':1.74}}});assert.equal(last.hltv,'1.74');assert.match(lastSvg(last),/>HLTV</);
+ assert.equal(lastModel({player:a,match}).hltv,'—');
+ const compare=compareModel({a,b,aMatches:[rated(1.74),rated(null)],bMatches:[rated(1.26)]});const metric=compare.metrics.find(m=>m.label==='HLTV');assert.equal(metric.left,1.74);assert.equal(metric.right,1.26);
+ const form=formModel({player:a,matches:[...Array.from({length:10},()=>rated(1.5)),...Array.from({length:10},()=>rated(1.2))]});assert.equal(form.metrics.find(m=>m.label==='HLTV').delta,.3);assert.match(formSvg(form),/>HLTV</);
+});

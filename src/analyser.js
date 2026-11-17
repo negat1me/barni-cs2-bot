@@ -8,7 +8,8 @@ export function normalizeAnalyserStats(body,id,now) {
   const highestElo=finite(body.highest_elo),lowestElo=finite(body.lowest_elo);
   if(highestElo==null||highestElo<0||lowestElo!=null&&(lowestElo<0||lowestElo>highestElo))throw new Error('Invalid Elo');
   const date=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)?value:null;
-  return {playerId:id,highestElo,lowestElo,firstOccurrence:date(body.first_occurrence),lastOccurrence:date(body.last_occurrence),checkedAt:now,attemptedAt:now,retryAt:0};
+  const avg=finite(body.avg_hltv),matches=finite(body.m);
+  return {playerId:id,highestElo,lowestElo,avgHltv:avg!=null&&avg>=0?avg:null,ratingMatches:matches!=null&&matches>=0?matches:null,firstOccurrence:date(body.first_occurrence),lastOccurrence:date(body.last_occurrence),checkedAt:now,attemptedAt:now,retryAt:0};
 }
 export const hasAnalyserPeak=p=>Number.isFinite(p?.analyser?.highestElo);
 export function usesAnalyser(data) {
@@ -86,11 +87,12 @@ export class FaceitAnalyser {
     const delay=entry.retries<=3?120000:21600000;
     entry.checkedAt=this.now()-DAY+delay;entry.retryAt=this.now()+delay;
   }
-  async stats(id,cached) {
-    const cache=cached?.playerId===id?cached:this.cache.get(id);
+  async stats(id,cached,{rating=false}={}) {
+    const memory=this.cache.get(id);
+    const cache=cached?.playerId===id&&(!memory||cached.attemptedAt>memory.attemptedAt)?cached:memory;
     const now=this.now();
     if(!this.enabled)return cache??null;
-    if(cache&&(hasAnalyserPeak({analyser:cache})&&now>=cache.checkedAt&&now-cache.checkedAt<DAY || cache.retryAt>now))return cache;
+    if(cache&&(hasAnalyserPeak({analyser:cache})&&(!rating||Object.hasOwn(cache,'avgHltv'))&&now>=cache.checkedAt&&now-cache.checkedAt<DAY || cache.retryAt>now))return cache;
     if(this.pending.has(id))return this.pending.get(id);
     const task=this.queue.then(()=>this.request(id,cache));
     this.queue=task.catch(()=>{});this.pending.set(id,task);

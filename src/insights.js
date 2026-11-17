@@ -28,13 +28,14 @@ export function formCard(p, matches) {
   const lines=[`<b>📈 ${h(p.nickname)} · Форма</b>`, `ELO ${p.elo} · MAX ${peakElo(p)??'—'} · Δ день ${eloLabel(latestEloDay(p))}`, `Останні <b>${recent.length}</b> / попередні <b>${previous.length}</b>`, ''];
   if (!recent.length) return lines.concat('Немає завершених матчів.').join('\n');
   const kd = ms => summary(ms).kd==='∞' ? Infinity : numeric(summary(ms).kd);
-  const metrics=[['ADR',averageStat(recent,'ADR'),averageStat(previous,'ADR'),1,''],['K/D',kd(recent),kd(previous),2,''],['AVG K',averageStat(recent,'Kills'),averageStat(previous,'Kills'),1,''],['WR',rate(recent),rate(previous),0,'%']];
+  const metrics=[['ADR',averageStat(recent,'ADR'),averageStat(previous,'ADR'),1,''],['K/D',kd(recent),kd(previous),2,''],['AVG K',averageStat(recent,'Kills'),averageStat(previous,'Kills'),1,''],['WR',rate(recent),rate(previous),0,'%'],['HLTV',averageStat(recent,'HLTV Rating'),averageStat(previous,'HLTV Rating'),2,'']];
   for (const [label,current,old,digits,suffix] of metrics) {
     const display = n => n==null ? '—' : n===Infinity ? '∞' : n.toFixed(digits)+suffix;
     const change = current==null || old==null || !Number.isFinite(current) || !Number.isFinite(old) ? '' : Math.abs(current-old)<10**(-digits)/2 ? ' · →' : ` · ${current>old?'↑':'↓'} ${Math.abs(current-old).toFixed(digits)}${label==='WR'?' п.п.':''}`;
     lines.push(`${label}  <b>${display(current)}</b> / ${display(old)}${change}`);
   }
-  lines.push('', summary(recent).form);
+  const coverage=rows=>`${rows.filter(m=>numeric(m.stats?.['HLTV Rating'])!=null).length}/${rows.length}`;
+  lines.push(`HLTV: ${coverage(recent)} / ${coverage(previous)} матчів`,'', summary(recent).form);
   if (matches.length<20) lines.push('<i>Неповна вибірка — потрібно 20 матчів.</i>');
   if (matches.some(m=>m.win==null || ['Kills','Deaths','ADR'].some(k=>numeric(m.stats?.[k])==null))) lines.push('<i>Середні за доступними даними.</i>');
   return lines.join('\n');

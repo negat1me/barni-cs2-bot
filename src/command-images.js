@@ -81,7 +81,8 @@ export function compareModel({a,b,aMatches,bMatches}) {
     {label:'K/D/A',left:kda(aMatches),right:kda(bMatches),parts:true},
     metric('K/D',ratio(aMatches),ratio(bMatches),2), metric('ADR',averageStat(aMatches,'ADR'),averageStat(bMatches,'ADR'),1),
     metric('HS',averageStat(aMatches,'Headshots %'),averageStat(bMatches,'Headshots %'),0,'%'),
-    metric('K/R',averageStat(aMatches,'K/R Ratio'),averageStat(bMatches,'K/R Ratio'),2)
+    metric('K/R',averageStat(aMatches,'K/R Ratio'),averageStat(bMatches,'K/R Ratio'),2),
+    metric('HLTV',averageStat(aMatches,'HLTV Rating'),averageStat(bMatches,'HLTV Rating'),2)
   ],incomplete:partial(aMatches)||partial(bMatches)};
 }
 // Compare the displayed precision; equal-looking numbers stay neutral.
@@ -112,9 +113,11 @@ export function compareSvg(model,avatars=[]) {
     const y=228+i*68;
     body+=b(44,y,1032,58)+t(560,y+36,metric.label,17,c.muted,700,middle)+compared(metric,286,y+40,'left')+compared(metric,832,y+40,'right');
   });
-  body+=formStrip(aMatches,170,730)+formStrip(bMatches,704,730);
-  body+=t(44,798,(usesAnalyser({a,b:other})?'MAX: Faceit Analyser + трекінг':'MAX від початку трекінгу')+' · ~ неповний день',14,c.muted);
-  return frame(852,'COMPARE','',body,`Останні до 20 матчів · AVG / матч · ELO поточне${model.incomplete?' · неповні дані':''}`);
+  const formY=254+model.metrics.length*68;
+  body+=formStrip(aMatches,170,formY)+formStrip(bMatches,704,formY);
+  body+=t(44,formY+68,(usesAnalyser({a,b:other})?'MAX: Faceit Analyser + трекінг':'MAX від початку трекінгу')+' · ~ неповний день',14,c.muted);
+  const coverage=rows=>`${rows.filter(m=>numeric(m.stats?.['HLTV Rating'])!=null).length}/${rows.length}`;
+  return frame(formY+122,'COMPARE','',body,`AVG / матч · HLTV ${coverage(aMatches)} / ${coverage(bMatches)} · ELO поточне${model.incomplete?' · неповні дані':''}`);
 }
 
 export function lastModel({player,match:m},zone='Europe/Kyiv') {
@@ -125,7 +128,7 @@ export function lastModel({player,match:m},zone='Europe/Kyiv') {
     score:own!=null&&opponent!=null?`${own} : ${opponent}`:m.score||'—',
     map:String(m.map??'Карта —').replace(/^de_/,''),context:[date,duration,m.region].filter(Boolean).join(' · '),
     kda:['Kills','Deaths','Assists'].map(k=>fmt(s[k])).join('/'),kd:fmt(ratio([m]),2),
-    adr:fmt(s.ADR,1),hs:fmt(s['Headshots %'],0,'%'),kr:fmt(s['K/R Ratio'],2),delta:m.eloDelta==null?'—':`${m.eloDelta>0?'+':''}${fmt(m.eloDelta)}`,
+    adr:fmt(s.ADR,1),hs:fmt(s['Headshots %'],0,'%'),kr:fmt(s['K/R Ratio'],2),hltv:fmt(s['HLTV Rating'],2),delta:m.eloDelta==null?'—':`${m.eloDelta>0?'+':''}${fmt(m.eloDelta)}`,
     multi:[['2K','Double Kills'],['3K','Triple Kills'],['4K','Quadro Kills'],['ACE','Penta Kills']].filter(([,k])=>numeric(s[k])>0).map(([label,key])=>`${label} ${fmt(s[key])}`).join('   ·   '),incomplete:partial([m])};
 }
 export function lastSvg(model,avatars=[],zone='Europe/Kyiv') {
@@ -136,7 +139,7 @@ export function lastSvg(model,avatars=[],zone='Europe/Kyiv') {
   const metrics=[['K/D/A',model.kda,390],['K/D',model.kd,214],['ADR',model.adr,214],['HS',model.hs,214]];
   let x=44;body+=b(44,410,1032,110);
   for(const [label,value,width] of metrics){body+=t(x+24,445,label,18,c.muted,700)+t(x+24,494,value,label==='K/D/A'?43:39,c.text,700);x+=width;}
-  body+=b(44,542,1032,84)+t(68,573,'K/R',17,c.muted,700)+t(68,607,model.kr,27,c.text,700)+t(300,594,model.multi||'CS2 · матч завершено',23,c.muted);
+  body+=b(44,542,1032,84)+t(68,573,'K/R',17,c.muted,700)+t(68,607,model.kr,27,c.text,700)+t(200,573,'HLTV',17,c.muted,700)+t(200,607,model.hltv,27,c.text,700)+t(360,594,trim(model.multi||'CS2 · матч завершено',45),20,c.muted);
   body+=t(1052,573,'Δ ELO',17,c.muted,700,end)+t(1052,607,model.delta,27,m.eloDelta>0?c.green:m.eloDelta<0?c.red:c.muted,700,end);
   body+=t(44,674,model.context,20,c.muted);
   body+=t(44,712,eloNote(model.player,zone),14,c.muted);
@@ -145,7 +148,7 @@ export function lastSvg(model,avatars=[],zone='Europe/Kyiv') {
 
 export function formModel({player,matches}) {
   const recent=matches.slice(0,10),previous=matches.slice(10,20);
-  const entries=[['ADR',averageStat(recent,'ADR'),averageStat(previous,'ADR'),1,''],['K/D',ratio(recent),ratio(previous),2,''],['AVG K',averageStat(recent,'Kills'),averageStat(previous,'Kills'),0,''],['WIN RATE',wr(recent),wr(previous),0,'%']];
+  const entries=[['ADR',averageStat(recent,'ADR'),averageStat(previous,'ADR'),1,''],['K/D',ratio(recent),ratio(previous),2,''],['AVG K',averageStat(recent,'Kills'),averageStat(previous,'Kills'),0,''],['WIN RATE',wr(recent),wr(previous),0,'%'],['HLTV',averageStat(recent,'HLTV Rating'),averageStat(previous,'HLTV Rating'),2,'']];
   const metrics=entries.map(([label,current,old,digits,suffix])=>{
     const delta=current!=null&&old!=null&&Number.isFinite(current)&&Number.isFinite(old)?Number((current-old).toFixed(digits)):null;
     return {label,current,old,digits,suffix,delta};
@@ -161,9 +164,11 @@ export function formSvg(model,avatars=[],zone='Europe/Kyiv') {
     const arrow=metric.delta==null?'':`<path d="${metric.delta===0?`M887 ${y+38}H903M897 ${y+32}L903 ${y+38}L897 ${y+44}`:metric.delta>0?`M895 ${y+47}V${y+29}M889 ${y+35}L895 ${y+29}L901 ${y+35}`:`M895 ${y+29}V${y+47}M889 ${y+41}L895 ${y+47}L901 ${y+41}`}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>`;
     body+=b(44,y,1032,76)+t(68,y+48,metric.label,22,c.muted,700)+t(476,y+50,fmt(metric.old,metric.digits,metric.suffix),32,c.muted,700,middle)+t(748,y+50,fmt(metric.current,metric.digits,metric.suffix),35,color===c.muted?c.text:color,700,middle)+arrow+t(1048,y+48,delta,24,color,700,end);
   });
-  body+=model.recent.length?t(44,685,'ОСТАННІ',17,c.muted,700)+formStrip(model.recent,220,660,10):t(44,686,'Завершених матчів немає',23,c.muted);
-  body+=t(44,730,eloNote(model.player,zone),14,c.muted);
-  return frame(788,'ФОРМА','',body,`AVG / матч · новіші результати ліворуч${model.incomplete?' · неповна вибірка або дані':''}`);
+  const formY=300+model.metrics.length*90;
+  body+=model.recent.length?t(44,formY+25,'ОСТАННІ',17,c.muted,700)+formStrip(model.recent,220,formY,10):t(44,formY+26,'Завершених матчів немає',23,c.muted);
+  body+=t(44,formY+70,eloNote(model.player,zone),14,c.muted);
+  const coverage=rows=>`${rows.filter(m=>numeric(m.stats?.['HLTV Rating'])!=null).length}/${rows.length}`;
+  return frame(formY+128,'ФОРМА','',body,`AVG / матч · HLTV ${coverage(model.recent)} / ${coverage(model.previous)}${model.incomplete?' · неповна вибірка або дані':''}`);
 }
 
 async function avatarsFor(players,fetcher) {

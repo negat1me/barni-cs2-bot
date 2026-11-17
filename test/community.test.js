@@ -173,7 +173,8 @@ test('reserve button promotes first reserve and removes leaving player from both
   assert.deepEqual(p.reserves.map(x=>x.id),['7']);
   await f.click(7,'leave');assert.equal(p.reserves.length,0);
 });
-test('reminder schedule and reserves survive restart, sends once and cancels on close',async()=>{
+test('reminder schedule and reserves survive restart, sends once and cancels on close',async(t)=>{
+  t.mock.timers.enable({apis:['Date'],now:Date.parse('2026-11-17T10:00Z')});
   const dir=mkdtempSync(join(tmpdir(),'barni-reminders-'));
   try {
     const path=join(dir,'state.json'),f=fixture(new Store(path));
@@ -222,4 +223,69 @@ test('party uses linked FACEIT nicknames in active and reserve lists, with Teleg
  assert.match(text,/tg:\/\/user\?id=2">&lt;FaceitTwo&gt;/);
  assert.match(text,/Player 3/);
  assert.ok(!text.includes('Player 1'));assert.ok(!text.includes('Player 2'));
+});
+
+test('party pins its own message once and keeps the pin and day after restart',async(t)=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.parse('2026-11-17T18:00Z')});
+ const dir=mkdtempSync(join(tmpdir(),'barni-party-pin-'));
+ try {
+  const path=join(dir,'state.json'),f=fixture(new Store(path));
+  await f.command(1,'/party');const p=f.state.chats[-1].party;
+  assert.equal(p.day,'2026-11-17');assert.equal(p.pinnedMessageId,p.messageId);
+  await f.click(2,'join');await f.command(1,'/party Граємо');
+  const pins=f.calls.filter(([method])=>method==='pinChatMessage');assert.equal(pins.length,1);assert.equal(pins[0][1].message_id,p.messageId);assert.equal(pins[0][1].disable_notification,true);
+  const restored=fixture(new Store(path));await restored.bot.community.expireParties();assert.equal(restored.calls.length,0);assert.equal(restored.state.chats[-1].party.day,p.day);
+ }finally{rmSync(dir,{recursive:true});}
+});
+test('07:00 closes party, removes its buttons and pin, and cancels overdue reminders',async(t)=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.parse('2026-11-17T04:50Z')});
+ const f=fixture();await f.command(1,'/party На 06:58');const p=f.state.chats[-1].party;
+ assert.equal(p.day,'2026-11-16');await f.bot.community.expireParties(Date.parse('2026-11-17T04:59:59.999Z'));assert.equal(f.state.chats[-1].party,p);
+ f.calls.length=0;await f.bot.community.remindParties(Date.parse('2026-11-17T05:00Z'));
+ assert.equal(f.state.chats[-1].party,undefined);assert.equal(f.calls.some(([method])=>method==='sendMessage'),false);
+ const edit=f.calls.find(([method])=>method==='editMessageText')[1];assert.match(edit.text,/07:00/);assert.deepEqual(edit.reply_markup.inline_keyboard,[]);
+ assert.deepEqual(f.calls.find(([method])=>method==='unpinChatMessage')[1],{chat_id:'-1',message_id:p.messageId});
+ const count=f.calls.length;await f.bot.community.expireParties(Date.parse('2026-11-17T05:01Z'));assert.equal(f.calls.length,count);
+});
+test('offline party closes on restart and an expired callback cannot join or revive it',async(t)=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.parse('2026-11-17T18:00Z')});
+ const dir=mkdtempSync(join(tmpdir(),'barni-party-day-'));
+ try {
+  const path=join(dir,'state.json'),f=fixture(new Store(path));await f.command(1,'/party');const old=f.state.chats[-1].party;
+  t.mock.timers.setTime(Date.parse('2026-11-19T10:00Z'));const restarted=fixture(new Store(path));
+  await restarted.click(2,'join',old);assert.equal(restarted.state.chats[-1].party,undefined);assert.match(restarted.calls.at(-1)[1].text,/неактивний/);
+  assert.equal(new Store(path).state.chats[-1].party,undefined);
+  await restarted.command(2,'/party');assert.notEqual(restarted.state.chats[-1].party.id,old.id);assert.equal(restarted.state.chats[-1].party.day,'2026-11-19');
+ }finally{rmSync(dir,{recursive:true});}
+});
+test('pin failures leave party usable, show the required right and retry without duplicate pins',async(t)=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.parse('2026-11-17T18:00Z')});
+ const f=fixture(),original=f.api.tg;let attempts=0;
+ f.api.tg=async(method,body)=>{if(method==='pinChatMessage'){attempts++;throw Error('Bad Request: not enough rights to pin');}return original(method,body);};
+ await f.command(1,'/party');const p=f.state.chats[-1].party;
+ assert.ok(p);assert.match(f.calls.at(-1)[1].text,/право «Закріплювати повідомлення»/);
+ await f.click(2,'join');assert.equal(p.participants.length,2);assert.equal(attempts,1);
+ f.api.tg=original;t.mock.timers.setTime(p.pinRetryAt);await f.bot.community.expireParties();
+ assert.equal(p.pinError,undefined);assert.equal(p.pinnedMessageId,p.messageId);assert.ok(!f.calls.at(-1)[1].text.includes('Для закріплення'));
+ await f.click(3,'join');assert.equal(f.calls.filter(([method])=>method==='pinChatMessage').length,1);
+});
+test('unpin retries survive restart and never unpin a newly opened party',async(t)=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.parse('2026-11-17T18:00Z')});
+ const dir=mkdtempSync(join(tmpdir(),'barni-party-cleanup-'));
+ try {
+  const path=join(dir,'state.json'),f=fixture(new Store(path));await f.command(1,'/party');const old=f.state.chats[-1].party;
+  const original=f.api.tg;f.api.tg=async(method,body)=>{if(method==='unpinChatMessage')throw Error('temporary failure');return original(method,body);};
+  await f.click(1,'close');assert.equal(f.state.chats[-1].party,undefined);assert.equal(f.state.chats[-1].partyCleanup.length,1);
+  await f.command(2,'/party');const current=f.state.chats[-1].party;assert.notEqual(current.messageId,old.messageId);
+  const restarted=fixture(new Store(path));t.mock.timers.setTime(Date.now()+60001);await restarted.bot.community.expireParties();
+  assert.deepEqual(restarted.calls.filter(([method])=>method==='unpinChatMessage').map(([,body])=>body.message_id),[old.messageId]);
+  assert.equal(restarted.state.chats[-1].party.id,current.id);assert.equal(restarted.state.chats[-1].partyCleanup.length,0);
+ }finally{rmSync(dir,{recursive:true});}
+});
+
+test('party day end follows Kyiv daylight-saving changes at local 07:00',async(t)=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.parse('2026-03-28T18:00Z')});
+ const f=fixture();await f.command(1,'/party');const p=f.state.chats[-1].party;
+ await f.bot.community.expireParties(Date.parse('2026-03-29T03:59:59Z'));assert.equal(f.state.chats[-1].party,p);
+ await f.bot.community.expireParties(Date.parse('2026-03-29T04:00:00Z'));assert.equal(f.state.chats[-1].party,undefined);
 });
